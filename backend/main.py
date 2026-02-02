@@ -1,243 +1,375 @@
-"""
-Standalone Bot Zoom Backend
-FastAPI application for audio transcription using Whisper
-No database, no authentication - just simple file-based storage
-"""
-import json
+# # backend/main.py
+# import os
+# import shutil
+# import uuid
+# from pathlib import Path
+# from typing import Any, Dict
+
+# from fastapi import FastAPI, File, UploadFile, HTTPException, Depends
+# from fastapi.middleware.cors import CORSMiddleware
+# from sqlalchemy.orm import Session
+
+# from core.config import settings
+# from database.base import Base, engine, get_db
+# from domains.auth.utils import get_current_active_user
+# from domains.user.model import User
+# from api.auth import router as auth_router
+# from api.users import router as users_router
+# from api.zoom_resume.transcripts import router as transcripts_router
+# from domains.zoom_resume.transcript.whisper import transcribe_audio_file
+# from domains.zoom_resume.transcript.model import Transcript, TranscriptStatus
+
+# # Create database tables
+# Base.metadata.create_all(bind=engine)
+
+# app = FastAPI(
+#     title=settings.APP_NAME,
+#     version=settings.APP_VERSION,
+#     debug=settings.DEBUG
+# )
+
+# # CORS Configuration
+# app.add_middleware(
+#     CORSMiddleware,
+#     allow_origins=settings.CORS_ORIGINS,
+#     allow_credentials=True,
+#     allow_methods=["*"],
+#     allow_headers=["*"],
+# )
+
+# # Include routers
+# app.include_router(auth_router)
+# app.include_router(users_router)
+# app.include_router(transcripts_router)
+
+# UPLOAD_DIR = Path("uploads")
+# UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+
+
+# @app.get("/")
+# def root():
+#     """Root endpoint."""
+#     return {
+#         "message": "Meeting Transcript API",
+#         "version": settings.APP_VERSION,
+#         "docs": "/docs"
+#     }
+
+
+
+# # Backward compatibility endpoint for old TranscriptMeeting.vue
+# @app.post("/transcribe")
+# async def transcribe_endpoint(
+#     file: UploadFile = File(...),
+#     db: Session = Depends(get_db),
+#     current_user: User = Depends(get_current_active_user)
+# ) -> Dict[str, Any]:
+#     """
+#     Legacy endpoint for transcription.
+#     Now saves to database and processes asynchronously.
+    
+#     For immediate results, use this endpoint.
+#     For async processing with status tracking, use POST /transcripts/upload.
+#     """
+#     from domains.zoom_resume.transcript.service import TranscriptService
+#     from workers.meeting.transcribe_worker import enqueue_transcript
+    
+#     # Validate file extension
+#     ext = os.path.splitext(file.filename or "")[1].lower()
+#     if ext not in [".wav", ".mp3", ".m4a", ".flac", ".webm", ".ogg"]:
+#         raise HTTPException(status_code=400, detail="Unsupported file type")
+
+#     # Save file
+#     file_name = f"{uuid.uuid4().hex}{ext}"
+#     file_path = UPLOAD_DIR / file_name
+#     transcript = None
+
+#     try:
+#         # Save uploaded file
+#         with file_path.open("wb") as buffer:
+#             shutil.copyfileobj(file.file, buffer)
+
+#         # Create transcript record in database
+#         transcript = TranscriptService.create_transcript(
+#             db,
+#             user_id=current_user.id,
+#             audio_url=str(file_path)
+#         )
+        
+#         # Update status to PROCESSING
+#         TranscriptService.update_status(db, transcript.id, TranscriptStatus.PROCESSING)
+        
+#         # Enqueue for async processing (background worker)
+#         enqueue_transcript(transcript.id)
+        
+#         # Return immediately with PROCESSING status
+#         # Client should poll GET /transcripts/{id}/status for updates
+#         return {
+#             "transcript_id": transcript.id,
+#             "status": "PROCESSING",
+#             "message": "Transcription queued. Poll /transcripts/{id}/status for updates.",
+#             # Return empty data for backward compatibility
+#             "language": None,
+#             "text": "",
+#             "segments": [],
+#             "model": "small",
+#             "device": "cpu"
+#         }
+
+#     except HTTPException:
+#         # Re-raise HTTP exceptions
+#         raise
+#     except Exception as e:
+#         # Unexpected error - update transcript if exists
+#         if transcript:
+#             try:
+#                 TranscriptService.update_status(
+#                     db,
+#                     transcript.id,
+#                     TranscriptStatus.FAILED,
+#                     error_message=str(e)
+#                 )
+#             except:
+#                 pass
+        
+#         # Clean up file if exists
+#         try:
+#             if file_path.exists():
+#                 file_path.unlink()
+#         except:
+#             pass
+            
+#         raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+# backend/main.py
 import os
 import shutil
-from datetime import datetime
+import uuid
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, Dict
 
-import aiofiles
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, UploadFile, HTTPException, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
-from dotenv import load_dotenv
+from sqlalchemy.orm import Session
 
-from whisper_service import transcribe_audio_file, get_model_info
+from core.config import settings
+from database.base import Base, engine, get_db
+from domains.auth.utils import get_current_active_user
+from domains.user.model import User
+from api.auth import router as auth_router
+from api.users import router as users_router
+from api.zoom_resume.transcripts import router as transcripts_router
+from api.zoom_bot import router as zoom_bot_router
+from domains.zoom_resume.transcript.whisper import transcribe_audio_file
+from domains.zoom_resume.transcript.model import Transcript, TranscriptStatus
 
-# Load environment variables
-load_dotenv()
+# 
+from domains.zoom_resume.transcript.service import TranscriptService
+from workers.meeting.transcribe_worker import enqueue_transcript
 
-# Configuration
-HOST = os.getenv("HOST", "0.0.0.0")
-PORT = int(os.getenv("PORT", 8000))
-CORS_ORIGINS = os.getenv("CORS_ORIGINS", "http://localhost:5173").split(",")
-TRANSCRIPTS_DIR = Path(os.getenv("TRANSCRIPTS_DIR", "./transcripts"))
-UPLOADS_DIR = Path(os.getenv("UPLOADS_DIR", "./uploads"))
 
-# Create directories
-TRANSCRIPTS_DIR.mkdir(exist_ok=True)
-UPLOADS_DIR.mkdir(exist_ok=True)
 
-# FastAPI app
+# Create database tables
+Base.metadata.create_all(bind=engine)
+
 app = FastAPI(
-    title="Bot Zoom Transcription API",
-    description="Standalone audio transcription service using Whisper",
-    version="1.0.0",
+    title=settings.APP_NAME,
+    version=settings.APP_VERSION,
+    debug=settings.DEBUG
 )
 
-# CORS middleware
+# CORS Configuration
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=CORS_ORIGINS,
+    allow_origins=settings.CORS_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+# Include routers
+app.include_router(auth_router)
+app.include_router(users_router)
+app.include_router(transcripts_router)
+app.include_router(zoom_bot_router)
+
+UPLOAD_DIR = Path("uploads")
+UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+
 
 @app.get("/")
-async def root():
-    """Root endpoint"""
+def root():
     return {
-        "message": "Bot Zoom Transcription API",
-        "version": "1.0.0",
-        "docs": "/docs",
-        "status": "healthy"
+        "message": "Meeting Transcript API",
+        "version": settings.APP_VERSION,
+        "docs": "/docs"
     }
 
 
-@app.get("/health")
-async def health_check():
-    """Health check endpoint"""
-    model_info = get_model_info()
-    return {
-        "status": "healthy",
-        "whisper": model_info,
-        "storage": {
-            "transcripts": str(TRANSCRIPTS_DIR),
-            "uploads": str(UPLOADS_DIR)
-        }
-    }
+# ============================================================
+# ✅ 2) LEGACY MANUAL UPLOAD (tetap seperti punyamu)
+# ============================================================
 
+@app.get("/transcripts/latest")
+def get_latest_transcript(db: Session = Depends(get_db)):
+    from domains.zoom_resume.transcript.service import TranscriptService
 
-@app.post("/api/transcribe")
-async def transcribe_audio(file: UploadFile = File(...)):
+    transcript = TranscriptService.get_latest_transcript(db)
+
+    if not transcript:
+        raise HTTPException(status_code=404, detail="No transcripts yet")
+
+    return transcript
+
+@app.post("/transcribe")
+async def transcribe_endpoint(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)
+) -> Dict[str, Any]:
     """
-    Upload and transcribe an audio file
+    Legacy endpoint for transcription.
+    Now saves to database and processes asynchronously.
     
-    Returns:
-        Transcript with segments and metadata
+    For immediate results, use this endpoint.
+    For async processing with status tracking, use POST /transcripts/upload.
     """
+    from domains.zoom_resume.transcript.service import TranscriptService
+    from workers.meeting.transcribe_worker import enqueue_transcript
+    
+    # Validate file extension
+    ext = os.path.splitext(file.filename or "")[1].lower()
+    if ext not in [".wav", ".mp3", ".m4a", ".flac", ".webm", ".ogg"]:
+        raise HTTPException(status_code=400, detail="Unsupported file type")
+
+    # Save file
+    file_name = f"{uuid.uuid4().hex}{ext}"
+    file_path = UPLOAD_DIR / file_name
+    transcript = None
+
     try:
-        # Generate unique filename
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        file_ext = Path(file.filename).suffix if file.filename else ".webm"
-        upload_filename = f"audio_{timestamp}{file_ext}"
-        upload_path = UPLOADS_DIR / upload_filename
-        
         # Save uploaded file
-        async with aiofiles.open(upload_path, 'wb') as f:
-            content = await file.read()
-            await f.write(content)
+        with file_path.open("wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+
+        # Create transcript record in database
+        transcript = TranscriptService.create_transcript(
+            db,
+            user_id=current_user.id,
+            audio_url=str(file_path)
+        )
         
-        print(f"[API] Saved uploaded file: {upload_filename}")
+        # Update status to PROCESSING
+        TranscriptService.update_status(db, transcript.id, TranscriptStatus.PROCESSING)
         
-        # Transcribe
-        result = transcribe_audio_file(str(upload_path))
+        # Enqueue for async processing (background worker)
+        enqueue_transcript(transcript.id)
         
-        # Generate transcript ID
-        transcript_id = int(datetime.now().timestamp() * 1000)
-        
-        # Save transcript to JSON file
-        transcript_data = {
-            "id": transcript_id,
-            "created_at": datetime.now().isoformat(),
-            "status": "completed",
-            "language": result["language"],
-            "model": result["model"],
-            "device": result["device"],
-            "text": result["text"],
-            "segments": result["segments"],
-            "audio_file": upload_filename,
+        # Return immediately with PROCESSING status
+        # Client should poll GET /transcripts/{id}/status for updates
+        return {
+            "transcript_id": transcript.id,
+            "status": "PROCESSING",
+            "message": "Transcription queued. Poll /transcripts/{id}/status for updates.",
+            # Return empty data for backward compatibility
+            "language": None,
+            "text": "",
+            "segments": [],
+            "model": "small",
+            "device": "cpu"
         }
-        
-        transcript_file = TRANSCRIPTS_DIR / f"transcript_{transcript_id}.json"
-        async with aiofiles.open(transcript_file, 'w', encoding='utf-8') as f:
-            await f.write(json.dumps(transcript_data, ensure_ascii=False, indent=2))
-        
-        print(f"[API] Saved transcript: transcript_{transcript_id}.json")
-        
-        # Clean up uploaded file (optional - comment out to keep files)
-        # upload_path.unlink()
-        
-        return JSONResponse(content=transcript_data)
-        
-    except Exception as e:
-        print(f"[API] Error transcribing audio: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
 
-
-@app.get("/api/transcripts/latest")
-async def get_latest_transcript():
-    """
-    Get the most recent transcript
-    
-    Returns:
-        Latest transcript data or 404 if none exist
-    """
-    try:
-        # Find all transcript files
-        transcript_files = list(TRANSCRIPTS_DIR.glob("transcript_*.json"))
-        
-        if not transcript_files:
-            raise HTTPException(status_code=404, detail="No transcripts found")
-        
-        # Get the most recent file
-        latest_file = max(transcript_files, key=lambda p: p.stat().st_mtime)
-        
-        # Read and return
-        async with aiofiles.open(latest_file, 'r', encoding='utf-8') as f:
-            content = await f.read()
-            data = json.loads(content)
-        
-        return JSONResponse(content=data)
-        
     except HTTPException:
+        # Re-raise HTTP exceptions
         raise
     except Exception as e:
-        print(f"[API] Error getting latest transcript: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.get("/api/transcripts/{transcript_id}")
-async def get_transcript(transcript_id: int):
-    """
-    Get a specific transcript by ID
-    
-    Args:
-        transcript_id: Transcript ID
+        # Unexpected error - update transcript if exists
+        if transcript:
+            try:
+                TranscriptService.update_status(
+                    db,
+                    transcript.id,
+                    TranscriptStatus.FAILED,
+                    error_message=str(e)
+                )
+            except:
+                pass
         
-    Returns:
-        Transcript data or 404 if not found
+        # Clean up file if exists
+        try:
+            if file_path.exists():
+                file_path.unlink()
+        except:
+            pass
+            
+        raise HTTPException(status_code=500, detail=str(e)) from e
+# 3 NODE ZOOM BOT UPLOAD (local recording)
+# ============================================================
+
+@app.post("/meetings/upload")
+async def upload_meeting_audio(
+    audio: UploadFile = File(...),
+    meeting_id: str = File(...),
+    db: Session = Depends(get_db),
+):
     """
+    Endpoint untuk Node.js Zoom Bot
+    - terima audio hasil puppeteer + ffmpeg
+    - simpan ke DB
+    - enqueue worker transkripsi
+    """
+
+    # validate extension
+    ext = os.path.splitext(audio.filename or "")[1].lower()
+    if ext not in [".wav", ".mp3", ".m4a", ".flac"]:
+        raise HTTPException(status_code=400, detail="Unsupported audio format")
+
+    # generate filename
+    file_name = f"meeting_{meeting_id}_{uuid.uuid4().hex}{ext}"
+    file_path = UPLOAD_DIR / file_name
+
+    transcript = None
+
     try:
-        transcript_file = TRANSCRIPTS_DIR / f"transcript_{transcript_id}.json"
-        
-        if not transcript_file.exists():
-            raise HTTPException(status_code=404, detail="Transcript not found")
-        
-        async with aiofiles.open(transcript_file, 'r', encoding='utf-8') as f:
-            content = await f.read()
-            data = json.loads(content)
-        
-        return JSONResponse(content=data)
-        
-    except HTTPException:
-        raise
+        # save file
+        with file_path.open("wb") as buffer:
+            shutil.copyfileobj(audio.file, buffer)
+
+        # create transcript DB entry
+        transcript = TranscriptService.create_transcript(
+            db=db,
+            user_id=1,  # meeting bot (no user)
+            audio_url=str(file_path)
+        )
+
+        # update status
+        TranscriptService.update_status(
+            db,
+            transcript.id,
+            TranscriptStatus.PROCESSING
+        )
+
+        # enqueue async worker
+        enqueue_transcript(transcript.id)
+
+        return {
+            "status": "queued",
+            "source": "zoom-bot",
+            "meeting_id": meeting_id,
+            "transcript_id": transcript.id,
+        }
+
     except Exception as e:
-        print(f"[API] Error getting transcript: {e}")
+        if transcript:
+            TranscriptService.update_status(
+                db,
+                transcript.id,
+                TranscriptStatus.FAILED,
+                error_message=str(e)
+            )
+
+        if file_path.exists():
+            file_path.unlink()
+
         raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.get("/api/transcripts")
-async def list_transcripts(limit: int = 10):
-    """
-    List all transcripts (most recent first)
-    
-    Args:
-        limit: Maximum number of transcripts to return
-        
-    Returns:
-        List of transcript metadata
-    """
-    try:
-        transcript_files = list(TRANSCRIPTS_DIR.glob("transcript_*.json"))
-        
-        # Sort by modification time (newest first)
-        transcript_files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
-        
-        # Limit results
-        transcript_files = transcript_files[:limit]
-        
-        # Read metadata from each file
-        transcripts = []
-        for file in transcript_files:
-            async with aiofiles.open(file, 'r', encoding='utf-8') as f:
-                content = await f.read()
-                data = json.loads(content)
-                # Return only metadata, not full segments
-                transcripts.append({
-                    "id": data["id"],
-                    "created_at": data["created_at"],
-                    "status": data["status"],
-                    "language": data["language"],
-                    "model": data["model"],
-                    "segment_count": len(data.get("segments", [])),
-                })
-        
-        return JSONResponse(content={"transcripts": transcripts, "total": len(transcripts)})
-        
-    except Exception as e:
-        print(f"[API] Error listing transcripts: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-if __name__ == "__main__":
-    import uvicorn
-    print(f"[SERVER] Starting on {HOST}:{PORT}")
-    print(f"[SERVER] CORS origins: {CORS_ORIGINS}")
-    uvicorn.run(app, host=HOST, port=PORT)

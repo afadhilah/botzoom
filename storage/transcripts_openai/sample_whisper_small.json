@@ -1,0 +1,21 @@
+{
+  "audio_file": "D:\\Project\\PLN\\Test\\Meeting-Transcript\\storage\\audio\\sample.wav",
+  "model": "small",
+  "device": "cpu",
+  "language": "en",
+  "text": "Printing, in the only sense with which we are at present concerned, differs from most, if not from all the arts and crafts represented in the exhibition.",
+  "segments": [
+    {
+      "id": 0,
+      "start": 0.0,
+      "end": 5.72,
+      "text": "Printing, in the only sense with which we are at present concerned, differs from most,"
+    },
+    {
+      "id": 1,
+      "start": 5.72,
+      "end": 9.64,
+      "text": "if not from all the arts and crafts represented in the exhibition."
+    }
+  ]
+}
