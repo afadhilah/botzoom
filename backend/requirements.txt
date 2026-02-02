@@ -28,8 +28,6 @@ pyjwt
 torch
 torchaudio
 transformers
-openai-whisper
-whisperx
 pyannote.audio
 sounddevice
 soundfile
