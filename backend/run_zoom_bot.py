@@ -36,6 +36,7 @@ def main():
         
         from integrations.zoom.bot import ZoomBot
         from integrations.zoom.bot_utils import clean_meeting_link
+        import os
         
         # Clean meeting link
         cleaned_link = clean_meeting_link(args.meeting_link)
@@ -51,14 +52,27 @@ def main():
         
         logger.info(f"Bot ID: {bot.id}")
         
+        # Write PID file for process management
+        pid_file = Path("out") / f"{bot.id}.pid"
+        pid_file.parent.mkdir(exist_ok=True)
+        pid_file.write_text(str(os.getpid()))
+        logger.info(f"PID {os.getpid()} written to {pid_file}")
+        
         # Run bot (blocking)
         bot.run()
+        
+        # Clean up PID file after completion
+        pid_file.unlink(missing_ok=True)
         
         logger.info("Bot session completed successfully")
         return 0
         
     except Exception as e:
         logger.error(f"Bot failed: {e}", exc_info=True)
+        # Clean up PID file on error
+        if 'bot' in locals():
+            pid_file = Path("out") / f"{bot.id}.pid"
+            pid_file.unlink(missing_ok=True)
         return 1
 
 if __name__ == '__main__':

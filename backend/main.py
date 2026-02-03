@@ -212,7 +212,10 @@ def root():
 # ============================================================
 
 @app.get("/transcripts/latest")
-def get_latest_transcript(db: Session = Depends(get_db)):
+def get_latest_transcript(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)
+):
     from domains.zoom_resume.transcript.service import TranscriptService
 
     transcript = TranscriptService.get_latest_transcript(db)

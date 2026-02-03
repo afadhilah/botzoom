@@ -84,13 +84,7 @@ def start_zoom_bot_background(
             start_new_session=True  # Detach from parent
         )
         
-        # Save PID to file for later termination
-        pid_file = backend_dir / "out" / f"{bot_uuid}.pid"
-        pid_file.parent.mkdir(exist_ok=True)
-        pid_file.write_text(str(process.pid))
-        
         logger.info(f"Started Zoom bot process {process.pid} (UUID: {bot_uuid}) for meeting: {meeting_link}")
-        logger.info(f"PID saved to: {pid_file}")
         
         return bot_uuid
         
@@ -176,119 +170,119 @@ async def end_zoom_bot(
                 detail=f"Bot {request.bot_id} not found or already terminated"
             )
         
-        # Create stop signal file for graceful shutdown
+        # Read PID first
+        pid = int(pid_file.read_text().strip())
+        
+        # Step 1: Try graceful shutdown with stop signal
         stop_flag_file = backend_dir / "out" / f"{request.bot_id}.stop"
         try:
             stop_flag_file.write_text("stop")
             logger.info(f"Created stop signal file for bot {request.bot_id}")
-            print(f"[ZOOM_BOT_API] Created stop signal file: {stop_flag_file}", flush=True)
+            print(f"[ZOOM_BOT_API] Created stop signal, waiting for graceful exit...", flush=True)
         except Exception as e:
             logger.warning(f"Failed to create stop signal file: {e}")
-            print(f"[ZOOM_BOT_API] Failed to create stop signal file: {e}", flush=True)
         
-        # Wait a moment for bot to detect signal and cleanup gracefully
+        # Step 2: Wait for graceful shutdown (max 5 seconds)
         import time
-        time.sleep(2)
+        max_wait = 5
+        wait_interval = 0.5
+        elapsed = 0
         
-        # Trigger transcription for the recorded audio file and wait for result
+        try:
+            import psutil
+            process_alive = True
+            while elapsed < max_wait and process_alive:
+                try:
+                    proc = psutil.Process(pid)
+                    if not proc.is_running():
+                        process_alive = False
+                        logger.info(f"Process {pid} exited gracefully after {elapsed}s")
+                        print(f"[ZOOM_BOT_API] Bot exited gracefully in {elapsed}s", flush=True)
+                        break
+                except psutil.NoSuchProcess:
+                    process_alive = False
+                    break
+                
+                time.sleep(wait_interval)
+                elapsed += wait_interval
+            
+            # Step 3: Force kill if still alive
+            if process_alive:
+                logger.warning(f"Process {pid} didn't exit gracefully, force killing...")
+                print(f"[ZOOM_BOT_API] Timeout, force killing process {pid}...", flush=True)
+                
+                parent = psutil.Process(pid)
+                children = parent.children(recursive=True)
+                
+                # Kill all children
+                for child in children:
+                    try:
+                        child.kill()
+                        logger.info(f"Killed child process {child.pid}")
+                    except psutil.NoSuchProcess:
+                        pass
+                
+                # Kill parent
+                parent.kill()
+                logger.info(f"Killed parent process {pid}")
+                
+        except ImportError:
+            # Fallback without psutil - just wait and kill
+            logger.warning("psutil not available, using basic kill after timeout")
+            time.sleep(max_wait)
+            import signal
+            try:
+                os.killpg(os.getpgid(pid), signal.SIGKILL)
+            except Exception:
+                os.kill(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            logger.info(f"Process {pid} already terminated")
+        
+        # Clean up files
+        pid_file.unlink(missing_ok=True)
+        stop_flag_file.unlink(missing_ok=True)
+        
+        logger.info(f"Bot {request.bot_id} terminated successfully")
+        print(f"[ZOOM_BOT_API] Bot terminated, starting transcription...", flush=True)
+        
+        # Trigger transcription asynchronously (enqueue for background processing)
         transcript_result = None
         try:
-            from workers.meeting.transcribe_worker import process_transcript
             from domains.zoom_resume.transcript.service import TranscriptService
+            from workers.meeting.transcribe_worker import enqueue_transcript
             
             audio_file = backend_dir / "out" / f"{request.bot_id}.opus"
             
             # Check if audio file exists
             if audio_file.exists():
-                # Create transcript record in database
+                # Create transcript record in database with PENDING status
                 transcript = TranscriptService.create_transcript(
                     db,
                     user_id=current_user.id,
                     audio_url=str(audio_file)
                 )
                 
-                logger.info(f"Starting transcription for bot {request.bot_id} -> transcript_id={transcript.id}")
-                print(f"[ZOOM_BOT_API] Starting transcription: {audio_file} -> transcript_id={transcript.id}", flush=True)
+                # Enqueue worker for background transcription processing
+                enqueue_transcript(transcript.id)
                 
-                # Process synchronously to get live result
-                transcript_result = process_transcript(transcript.id)
+                logger.info(f"Enqueued transcription for bot {request.bot_id} -> transcript_id={transcript.id}")
+                print(f"[ZOOM_BOT_API] Enqueued transcription: transcript_id={transcript.id}", flush=True)
                 
-                logger.info(f"Transcription completed: {transcript_result}")
-                print(f"[ZOOM_BOT_API] Transcription result: {transcript_result}", flush=True)
+                # Return transcript info immediately (client will poll for status)
+                transcript_result = {
+                    'status': 'enqueued',
+                    'transcript_id': transcript.id,
+                    'language': None,
+                    'segments_count': 0
+                }
             else:
                 logger.warning(f"Audio file not found for bot {request.bot_id}: {audio_file}")
                 print(f"[ZOOM_BOT_API] Audio file not found: {audio_file}", flush=True)
                 
         except Exception as e:
-            logger.error(f"Failed to transcribe for bot {request.bot_id}: {e}")
-            print(f"[ZOOM_BOT_API] Failed to transcribe: {e}", flush=True)
-            # Continue with bot termination even if transcription fails
-        
-        # Read PID
-        pid = int(pid_file.read_text().strip())
-        
-        # Kill process and all its children (Chrome, chromedriver, etc.)
-        try:
-            # First, try to find all child processes
-            try:
-                import psutil
-                parent = psutil.Process(pid)
-                children = parent.children(recursive=True)
-                
-                # Kill children first
-                for child in children:
-                    try:
-                        child.terminate()
-                        logger.info(f"Terminated child process {child.pid}")
-                    except psutil.NoSuchProcess:
-                        pass
-                
-                # Then kill parent
-                parent.terminate()
-                logger.info(f"Terminated parent process {pid}")
-                
-                # Wait for termination
-                import time
-                time.sleep(1)
-                
-                # Force kill if still alive
-                for child in children:
-                    try:
-                        if child.is_running():
-                            child.kill()
-                            logger.info(f"Force killed child process {child.pid}")
-                    except psutil.NoSuchProcess:
-                        pass
-                
-                if parent.is_running():
-                    parent.kill()
-                    logger.info(f"Force killed parent process {pid}")
-                    
-            except ImportError:
-                # Fallback: try killing process group
-                logger.warning("psutil not available, using fallback kill method")
-                try:
-                    os.killpg(os.getpgid(pid), signal.SIGTERM)
-                    logger.info(f"Sent SIGTERM to process group {pid}")
-                except Exception as e:
-                    logger.warning(f"Failed to kill process group: {e}")
-                    os.kill(pid, signal.SIGTERM)
-                    logger.info(f"Sent SIGTERM to process {pid}")
-                    
-        except ProcessLookupError:
-            # Process already dead
-            logger.warning(f"Process {pid} already terminated")
-        except Exception as e:
-            logger.error(f"Error killing process {pid}: {e}")
-            # Try force kill
-            try:
-                os.kill(pid, signal.SIGKILL)
-                logger.info(f"Force killed process {pid} with SIGKILL")
-            except ProcessLookupError:
-                logger.warning(f"Process {pid} already terminated")
-        
-        # Remove PID file
-        pid_file.unlink(missing_ok=True)
+            logger.error(f"Failed to enqueue transcription for bot {request.bot_id}: {e}")
+            print(f"[ZOOM_BOT_API] Failed to enqueue transcription: {e}", flush=True)
+            # Continue even if transcription fails
         
         response_data = {
             "message": "Bot session terminated successfully",

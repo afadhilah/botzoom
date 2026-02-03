@@ -98,6 +98,8 @@ interface TableData {
   target: string
   limit: string
   reviewer: string
+  onHeaderClick?: () => void
+  onDelete?: () => void
 }
 
 const sorting = ref<SortingState>([])
@@ -214,30 +216,36 @@ const columns: ColumnDef<TableData>[] = [
   // },
   {
     id: "actions",
-    cell: () => h(DropdownMenu, {}, {
-      default: () => [
-        h(DropdownMenuTrigger, { asChild: true }, {
-          default: () => h(Button, {
-            variant: "ghost",
-            class: "h-8 w-8 p-0",
-          }, {
+    cell: ({ row }) => {
+      const onDelete = row.original.onDelete
+      return h(DropdownMenu, {}, {
+        default: () => [
+          h(DropdownMenuTrigger, { asChild: true }, {
+            default: () => h(Button, {
+              variant: "ghost",
+              class: "h-8 w-8 p-0",
+            }, {
+              default: () => [
+                h("span", { class: "sr-only" }, "Open menu"),
+                h(IconDotsVertical, { class: "h-4 w-4" }),
+              ],
+            }),
+          }),
+          h(DropdownMenuContent, { align: "end" }, {
             default: () => [
-              h("span", { class: "sr-only" }, "Open menu"),
-              h(IconDotsVertical, { class: "h-4 w-4" }),
+              h(DropdownMenuItem, {}, () => "Edit"),
+              h(DropdownMenuItem, {}, () => "Make a copy"),
+              h(DropdownMenuItem, {}, () => "Favorite"),
+              h(DropdownMenuSeparator, {}),
+              h(DropdownMenuItem, {
+                onClick: onDelete,
+                class: "text-destructive focus:text-destructive"
+              }, () => "Delete"),
             ],
           }),
-        }),
-        h(DropdownMenuContent, { align: "end" }, {
-          default: () => [
-            h(DropdownMenuItem, {}, () => "Edit"),
-            h(DropdownMenuItem, {}, () => "Make a copy"),
-            h(DropdownMenuItem, {}, () => "Favorite"),
-            h(DropdownMenuSeparator, {}),
-            h(DropdownMenuItem, {}, () => "Delete"),
-          ],
-        }),
-      ],
-    }),
+        ],
+      })
+    },
   },
 ]
 

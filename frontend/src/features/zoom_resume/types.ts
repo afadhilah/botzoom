@@ -20,7 +20,7 @@ export interface Transcript {
     status: TranscriptStatus
     language: string | null
     full_text: string | null
-    segments: TranscriptSegment[] | null
+    segments_json: TranscriptSegment[] | null
     error_message: string | null
     created_at: string
     updated_at: string

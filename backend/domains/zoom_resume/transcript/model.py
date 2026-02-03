@@ -39,7 +39,12 @@ class Transcript(Base):
     # Transcription results
     language = Column(String(10), nullable=True)
     full_text = Column(Text, nullable=True)
-    segments_json = Column(JSON, nullable=True)
+    segments_json = Column("segments_json", JSON, nullable=True)
+    
+    @property
+    def segments(self):
+        """Expose segments_json as segments for Pydantic serialization."""
+        return self.segments_json
     
     # Error tracking
     error_message = Column(Text, nullable=True)
@@ -50,11 +55,6 @@ class Transcript(Base):
     
     # Relationships
     user = relationship("User", back_populates="transcripts")
-    
-    @property
-    def segments(self):
-        """Expose segments_json as segments for Pydantic serialization."""
-        return self.segments_json
     
     def __repr__(self):
         return f"<Transcript(id={self.id}, user_id={self.user_id}, status={self.status})>"

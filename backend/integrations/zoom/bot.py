@@ -191,6 +191,32 @@ class JoinZoomMeet:
         except Exception:
             pass
 
+    def ensure_muted(self):
+        """Ensure bot audio is muted before recording starts"""
+        try:
+            logging.info("[MUTE_CHECK] Verifying bot audio is muted...")
+            audio_button = WebDriverWait(self.browser, 5).until(
+                EC.presence_of_element_located((By.XPATH, '//button[@aria-label="Mute" or @aria-label="Unmute"]'))
+            )
+            current_state = audio_button.get_attribute('aria-label')
+            
+            if current_state == "Unmute":
+                logging.info("[MUTE_CHECK] ✅ Audio is already muted - safe to record")
+            elif current_state == "Mute":
+                logging.info("[MUTE_CHECK] Audio is currently unmuted, muting now...")
+                audio_button.click()
+                time.sleep(0.5)
+                # Verify mute was successful
+                new_state = audio_button.get_attribute('aria-label')
+                if new_state == "Unmute":
+                    logging.info("[MUTE_CHECK] ✅ Audio muted successfully - safe to record")
+                else:
+                    logging.warning("[MUTE_CHECK] ⚠️ Failed to verify mute status")
+            else:
+                logging.warning(f"[MUTE_CHECK] ⚠️ Unknown audio state: {current_state}")
+        except Exception as e:
+            logging.warning(f"[MUTE_CHECK] ⚠️ Could not verify mute status: {e}")
+
     def join_meeting(self):
         # 1. Fill credentials if present
         try:
@@ -275,14 +301,68 @@ class JoinZoomMeet:
         try:
             stop_flag_file = f"out/{self.id}.stop"
             if os.path.exists(stop_flag_file):
-                logging.info("Detected end session signal from API. Leaving meeting...")
+                logging.info(f"[END_SIGNAL] Detected end session signal from API: {stop_flag_file}")
+                print(f"[END_SIGNAL] Stop file found: {stop_flag_file}", flush=True)
+                
                 # Remove the flag file
                 try:
                     os.remove(stop_flag_file)
+                    logging.info(f"[END_SIGNAL] Removed stop flag file: {stop_flag_file}")
                 except Exception as e:
                     logging.warning(f"Failed to remove stop flag file: {e}")
-                # Leave the meeting properly before ending session
-                self.leave()
+                
+                # CRITICAL: Stop recording FIRST to allow FFmpeg to finalize the file
+                logging.info("[END_SIGNAL] Stopping recording to finalize audio file...")
+                print("[END_SIGNAL] Stopping FFmpeg recording...", flush=True)
+                self.stop_recording(timeout=15)  # Increase timeout to 15s for large files
+                
+                # Verify audio file exists before proceeding
+                audio_file = f"{self.output_file}.opus"
+                if os.path.exists(audio_file):
+                    file_size = os.path.getsize(audio_file)
+                    logging.info(f"[END_SIGNAL] Audio file verified: {audio_file} ({file_size} bytes)")
+                    print(f"[END_SIGNAL] Audio file ready: {file_size} bytes", flush=True)
+                else:
+                    logging.error(f"[END_SIGNAL] Audio file NOT found after stopping recording: {audio_file}")
+                    print(f"[END_SIGNAL] ERROR: Audio file missing!", flush=True)
+                
+                # Save transcript JSON from browser localStorage
+                if self.browser:
+                    try:
+                        logging.info("[END_SIGNAL] Saving transcript from browser...")
+                        self.save_transcript()
+                        logging.info("[END_SIGNAL] Transcript saved")
+                    except Exception as e:
+                        logging.error(f"[END_SIGNAL] Failed to save transcript: {e}")
+                
+                # Leave the meeting AFTER recording stopped and files saved
+                logging.info("[END_SIGNAL] Leaving meeting...")
+                print("[END_SIGNAL] Leaving Zoom meeting...", flush=True)
+                
+                # Close browser and cleanup (but DON'T upload/delete files)
+                if self.browser:
+                    try:
+                        # Leave meeting gracefully
+                        self.leave_meeting_only()  # New method without calling end_session
+                        self.browser.quit()
+                        logging.info("[END_SIGNAL] Browser closed")
+                    except Exception as e:
+                        logging.error(f"[END_SIGNAL] Error closing browser: {e}")
+                
+                # Cleanup cache directory
+                try:
+                    import shutil
+                    if os.path.exists(self.cache_dir):
+                        shutil.rmtree(self.cache_dir)
+                        logging.info(f"[END_SIGNAL] Cleaned up cache directory: {self.cache_dir}")
+                except Exception as e:
+                    logging.warning(f"[END_SIGNAL] Failed to cleanup cache: {e}")
+                
+                # Exit cleanly WITHOUT calling end_session() which would upload/delete files
+                logging.info("[END_SIGNAL] Bot shutdown complete. API will handle transcription.")
+                print("[END_SIGNAL] Exit complete - files preserved for transcription", flush=True)
+                sys.exit(0)
+                
         except Exception as e:
             logging.error(f"Error checking end signal: {e}")
 
@@ -334,6 +414,10 @@ class JoinZoomMeet:
                 logging.info("Admitted to the meeting. Starting recording...")
                 # Re-attempt audio connection if it failed previously or to ensure it's connected
                 self.connect_audio()
+                
+                # Ensure audio is muted before recording
+                self.ensure_muted()
+                
                 self.start_recording()
                 self.recording_started = True
         except TimeoutException:
@@ -441,17 +525,26 @@ class JoinZoomMeet:
             logging.error(f"Unexpected error starting recording: {e}")
 
 
-    def stop_recording(self):
+    def stop_recording(self, timeout=10):
+        """Stop FFmpeg recording gracefully with proper file finalization."""
         if self.recording_started and self.recording_process:
-            logging.info("Stopping audio recording...")
+            logging.info("Stopping audio recording gracefully...")
+            
+            # Send SIGTERM to allow FFmpeg to finalize the file
             self.recording_process.terminate()
+            
             try:
-                self.recording_process.wait()
-                logging.info("Recording stopped.")
+                # Wait for FFmpeg to finish writing and close the file properly
+                self.recording_process.wait(timeout=timeout)
+                logging.info("Recording stopped gracefully. FFmpeg finalized the output file.")
             except subprocess.TimeoutExpired:
-                logging.warning("Recording process did not terminate in time. Forcibly killing it.")
+                logging.warning(f"Recording process did not terminate within {timeout}s. Force killing...")
                 self.recording_process.kill()
-                logging.info("Recording process killed.")
+                self.recording_process.wait()  # Wait for kill to complete
+                logging.warning("Recording process force killed. Audio file may be corrupted.")
+            
+            # Mark recording as stopped
+            self.recording_started = False
         else:
             logging.info("No recording was started, nothing to stop.")
 
@@ -561,11 +654,16 @@ class JoinZoomMeet:
                 logging.warning(f"Failed to cleanup cache directory {self.cache_dir}: {e}")
             
             self.stop_event.set()
+            
+            # Only stop recording if it hasn't been stopped yet
             if self.recording_started:
-                self.stop_recording()
+                self.stop_recording(timeout=10)
+                
+            # Upload files if recording was done
+            if os.path.exists(f"{self.output_file}.opus"):
                 self.upload_files()
             else:
-                logging.info("No recording was started during this session.")
+                logging.warning("Audio file not found, skipping upload.")
         except Exception as e:
             logging.error("Error during session cleanup %s", str(e), exc_info=True)
         finally:
@@ -573,37 +671,145 @@ class JoinZoomMeet:
             sys.exit(0)
 
     def leave(self):
-        """Leave the meeting manually."""
+        """Leave the meeting manually with multiple confirmation handling."""
         logger.info("Leaving meeting...")
         
         try:
-            # Click leave button
+            # Step 1: Click leave/end button in footer
             try:
-                leave_button = WebDriverWait(self.browser, 5).until(
-                    EC.element_to_be_clickable((By.XPATH, '//button[@aria-label="Leave"]'))
-                )
-                leave_button.click()
-                logger.info("Clicked leave button")
-                time.sleep(1)
+                # Try multiple possible leave button locations
+                leave_button = None
+                button_xpaths = [
+                    '//button[@aria-label="Leave"]',
+                    '//button[contains(@class, "footer__leave-btn")]',
+                    '//button[contains(text(), "Leave Meeting")]',
+                    '//button[contains(text(), "End Meeting")]'
+                ]
                 
-                # Confirm leave if dialog appears
-                try:
-                    confirm_button = WebDriverWait(self.browser, 3).until(
-                        EC.element_to_be_clickable((By.XPATH, '//button[contains(text(), "Leave") or contains(text(), "End")]'))
-                    )
-                    confirm_button.click()
-                    logger.info("Confirmed leave")
-                except TimeoutException:
-                    pass  # No confirmation dialog
+                for xpath in button_xpaths:
+                    try:
+                        leave_button = WebDriverWait(self.browser, 2).until(
+                            EC.element_to_be_clickable((By.XPATH, xpath))
+                        )
+                        if leave_button:
+                            break
+                    except TimeoutException:
+                        continue
+                
+                if leave_button:
+                    leave_button.click()
+                    logger.info("Clicked leave button")
+                    time.sleep(1)
+                else:
+                    logger.warning("Leave button not found")
                     
-            except TimeoutException:
-                logger.warning("Leave button not found - might have already left")
+            except Exception as e:
+                logger.warning(f"Error clicking leave button: {e}")
+            
+            # Step 2: Handle first confirmation dialog (if appears)
+            try:
+                confirm_xpaths = [
+                    '//button[contains(text(), "Leave Meeting")]',
+                    '//button[contains(text(), "Leave") and not(contains(text(), "Cancel"))]',
+                    '//button[@data-testid="leave-meeting-button"]'
+                ]
+                
+                for xpath in confirm_xpaths:
+                    try:
+                        confirm1 = WebDriverWait(self.browser, 2).until(
+                            EC.element_to_be_clickable((By.XPATH, xpath))
+                        )
+                        confirm1.click()
+                        logger.info("Confirmed leave (first dialog)")
+                        time.sleep(1)
+                        break
+                    except TimeoutException:
+                        continue
+                        
+            except Exception as e:
+                logger.warning(f"No first confirmation dialog: {e}")
+            
+            # Step 3: Handle second confirmation dialog (if appears)
+            try:
+                confirm2_xpaths = [
+                    '//button[contains(text(), "Leave")]',
+                    '//button[contains(text(), "Yes")]',
+                    '//button[contains(text(), "OK")]'
+                ]
+                
+                for xpath in confirm2_xpaths:
+                    try:
+                        confirm2 = WebDriverWait(self.browser, 2).until(
+                            EC.element_to_be_clickable((By.XPATH, xpath))
+                        )
+                        confirm2.click()
+                        logger.info("Confirmed leave (second dialog)")
+                        time.sleep(1)
+                        break
+                    except TimeoutException:
+                        continue
+                        
+            except Exception as e:
+                logger.warning(f"No second confirmation dialog: {e}")
+            
+            logger.info("Leave sequence completed")
                 
         except Exception as e:
-            logger.error(f"Error leaving meeting: {e}")
+            logger.error(f"Error during leave: {e}")
         finally:
             # Always end session after leaving
             self.end_session()
+    
+    def leave_meeting_only(self):
+        """Leave Zoom meeting without calling end_session(). Used when API triggers shutdown."""
+        logger.info("Leaving meeting (without end_session)...")
+        
+        try:
+            # Step 1: Click leave/end button
+            leave_button = None
+            button_xpaths = [
+                '//button[@aria-label="Leave"]',
+                '//button[contains(@class, "footer__leave-btn")]',
+                '//button[contains(text(), "Leave Meeting")]',
+                '//button[contains(text(), "End Meeting")]'
+            ]
+            
+            for xpath in button_xpaths:
+                try:
+                    leave_button = WebDriverWait(self.browser, 2).until(
+                        EC.element_to_be_clickable((By.XPATH, xpath))
+                    )
+                    if leave_button:
+                        leave_button.click()
+                        logger.info("Clicked leave button")
+                        time.sleep(1)
+                        break
+                except TimeoutException:
+                    continue
+            
+            # Step 2: Handle confirmation dialogs
+            confirm_xpaths = [
+                '//button[contains(text(), "Leave Meeting")]',
+                '//button[contains(text(), "Leave") and not(contains(text(), "Cancel"))]',
+                '//button[@data-testid="leave-meeting-button"]'
+            ]
+            
+            for xpath in confirm_xpaths:
+                try:
+                    confirm = WebDriverWait(self.browser, 2).until(
+                        EC.element_to_be_clickable((By.XPATH, xpath))
+                    )
+                    confirm.click()
+                    logger.info("Confirmed leave")
+                    time.sleep(1)
+                    break
+                except TimeoutException:
+                    continue
+            
+            logger.info("Left meeting successfully")
+                
+        except Exception as e:
+            logger.warning(f"Error leaving meeting: {e}")
 
     def monitor_meeting(self, initial_elapsed_time=0):
         logging.info("Started monitoring the meeting.")

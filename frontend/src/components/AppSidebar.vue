@@ -29,18 +29,23 @@ import {
 } from '@/components/ui/sidebar'
 
 import plnLogo from '@/assets/PLN-Icon-Plus.png'
+import { useAuthStore } from '@/features/auth/store'
+import { computed } from 'vue'
 
 
 const props = withDefaults(defineProps<SidebarProps>(), {
   collapsible: "icon",
 })
 
+// Get authenticated user from auth store
+const authStore = useAuthStore()
+
 // This is sample data.
-const data = {
+const data = computed(() => ({
   user: {
-    name: "Ahmad Fadhilah",
-    email: "afadhilah2004@gmail.com",
-    avatar: "/avatars/shadcn.jpg",
+    name: authStore.user?.full_name || "User",
+    email: authStore.user?.email || "",
+    avatar: authStore.user?.avatar || "",  // Kosong jika tidak ada foto
   },
   teams: [
     {
@@ -151,7 +156,7 @@ const data = {
       ],
     },
   ],
-}
+}))
 </script>
 
 <template>

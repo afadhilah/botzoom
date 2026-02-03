@@ -28,6 +28,7 @@ import {
   SidebarMenuItem,
   useSidebar,
 } from '@/components/ui/sidebar'
+import { computed } from 'vue'
 
 const props = defineProps<{
   user: {
@@ -38,6 +39,15 @@ const props = defineProps<{
 }>()
 
 const { isMobile } = useSidebar()
+
+// Generate initials from name
+const userInitials = computed(() => {
+  const names = props.user.name.trim().split(' ')
+  if (names.length >= 2) {
+    return `${names[0][0]}${names[names.length - 1][0]}`.toUpperCase()
+  }
+  return names[0].substring(0, 2).toUpperCase()
+})
 </script>
 
 <template>
@@ -52,7 +62,7 @@ const { isMobile } = useSidebar()
             <Avatar class="h-8 w-8 rounded-lg">
               <AvatarImage :src="user.avatar" :alt="user.name" />
               <AvatarFallback class="rounded-lg">
-                CN
+                {{ userInitials }}
               </AvatarFallback>
             </Avatar>
             <div class="grid flex-1 text-left text-sm leading-tight">
@@ -73,7 +83,7 @@ const { isMobile } = useSidebar()
               <Avatar class="h-8 w-8 rounded-lg">
                 <AvatarImage :src="user.avatar" :alt="user.name" />
                 <AvatarFallback class="rounded-lg">
-                  CN
+                  {{ userInitials }}
                 </AvatarFallback>
               </Avatar>
               <div class="grid flex-1 text-left text-sm leading-tight">

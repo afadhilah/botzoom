@@ -26,6 +26,9 @@ const transcriptStore = useTranscriptStore()
 const isDialogOpen = ref(false)
 const selectedTranscript = ref<Transcript | null>(null)
 const latestZoomTranscript = ref<Transcript | null>(null)
+const isDeleteDialogOpen = ref(false)
+const transcriptToDelete = ref<Transcript | null>(null)
+const isDeleting = ref(false)
 
 // polling holder
 let pollInterval: number | null = null
@@ -68,7 +71,8 @@ const data = computed(() => {
       target: formattedDate,
       limit: t.segments?.length.toString() || '0',
       reviewer: t.error_message || '-',
-      onHeaderClick: () => handleRowClick({ id: t.id })
+      onHeaderClick: () => handleRowClick({ id: t.id }),
+      onDelete: () => confirmDelete(t)
     }
   })
 })
@@ -79,6 +83,36 @@ function handleRowClick(row: any) {
   if (transcript) {
     selectedTranscript.value = transcript
     isDialogOpen.value = true
+  }
+}
+
+// ===== DELETE HANDLER =====
+function confirmDelete(transcript: Transcript) {
+  transcriptToDelete.value = transcript
+  isDeleteDialogOpen.value = true
+}
+
+async function handleDelete() {
+  if (!transcriptToDelete.value) return
+  
+  isDeleting.value = true
+  try {
+    await transcriptApi.deleteTranscript(transcriptToDelete.value.id)
+    
+    // Remove from store
+    await transcriptStore.loadTranscriptList()
+    
+    // Close dialogs
+    isDeleteDialogOpen.value = false
+    isDialogOpen.value = false
+    
+    console.log(`Deleted transcript #${transcriptToDelete.value.id}`)
+  } catch (err) {
+    console.error('Failed to delete transcript:', err)
+    alert('Failed to delete transcript. Please try again.')
+  } finally {
+    isDeleting.value = false
+    transcriptToDelete.value = null
   }
 }
 
@@ -263,6 +297,42 @@ onUnmounted(() => {
         <Button variant="default">
           <Download class="h-4 w-4 mr-2" />
           Download
+        </Button>
+      </DialogFooter>
+    </DialogContent>
+  </Dialog>
+
+  <!-- DELETE CONFIRMATION DIALOG -->
+  <Dialog v-model:open="isDeleteDialogOpen">
+    <DialogContent class="max-w-md">
+      <DialogHeader>
+        <DialogTitle>Delete Transcript?</DialogTitle>
+        <DialogDescription>
+          Are you sure you want to delete this transcript? This action cannot be undone.
+          All associated files will be permanently deleted.
+        </DialogDescription>
+      </DialogHeader>
+
+      <div v-if="transcriptToDelete" class="space-y-2 text-sm">
+        <p><strong>Transcript ID:</strong> #{{ transcriptToDelete.id }}</p>
+        <p><strong>Language:</strong> {{ transcriptToDelete.language || 'Auto detect' }}</p>
+        <p><strong>Segments:</strong> {{ transcriptToDelete.segments?.length || 0 }}</p>
+      </div>
+
+      <DialogFooter>
+        <Button 
+          variant="outline" 
+          @click="isDeleteDialogOpen = false"
+          :disabled="isDeleting"
+        >
+          Cancel
+        </Button>
+        <Button 
+          variant="destructive" 
+          @click="handleDelete"
+          :disabled="isDeleting"
+        >
+          {{ isDeleting ? 'Deleting...' : 'Delete' }}
         </Button>
       </DialogFooter>
     </DialogContent>

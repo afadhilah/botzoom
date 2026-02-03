@@ -91,24 +91,101 @@ async function endZoomBot() {
   if (!activeBotId.value) return
   
   isEndingBot.value = true
+  isUploading.value = true
+  
+  // Clear previous results
+  segments.value = []
+  fullText.value = ""
+  language.value = null
+  
   try {
-    await transcriptApi.endZoomBot(activeBotId.value)
+    console.log('[END_BOT] Calling endZoomBot with bot_id:', activeBotId.value)
     
-    toast.success('Bot session ending', {
-      description: 'Zoom bot will leave the meeting shortly.',
+    const response = await transcriptApi.endZoomBot(activeBotId.value)
+    
+    console.log('[END_BOT] Response:', response)
+    
+    toast.success('Bot session ended', {
+      description: 'Processing transcript from Zoom recording...',
     })
     
     activeBotId.value = null
     
-    // Reload transcript after delay
-    setTimeout(() => {
-      loadLatestZoomTranscript()
-    }, 3000)
+    // Jika ada transcript result, poll status sampai selesai
+    if (response.transcript?.transcript_id) {
+      const transcriptId = response.transcript.transcript_id
+      console.log('[END_BOT] Polling transcript ID:', transcriptId)
+      
+      // Poll untuk status hingga DONE
+      const maxAttempts = 60 // 60 * 2s = 2 minutes max
+      let attempts = 0
+      
+      const pollInterval = setInterval(async () => {
+        try {
+          attempts++
+          const transcriptData = await transcriptApi.fetchTranscriptById(transcriptId)
+          
+          console.log(`[END_BOT] Poll attempt ${attempts}:`, transcriptData.status)
+          
+          if (transcriptData.status === 'DONE') {
+            clearInterval(pollInterval)
+            
+            console.log('[END_BOT] Transcription complete:', transcriptData)
+            
+            // Update UI dengan hasil transcript
+            language.value = transcriptData.language || null
+            segments.value = Array.isArray(transcriptData.segments) ? transcriptData.segments : []
+            fullText.value = transcriptData.full_text || ""
+            latestZoomTranscript.value = transcriptData
+            
+            isUploading.value = false
+            
+            if (segments.value.length > 0) {
+              toast.success('Transcript ready', {
+                description: `${segments.value.length} segments loaded.`,
+              })
+            } else {
+              toast.info('Transcript saved', {
+                description: 'No segments found in transcript.',
+              })
+            }
+          } else if (transcriptData.status === 'FAILED') {
+            clearInterval(pollInterval)
+            isUploading.value = false
+            toast.error('Transcription failed', {
+              description: transcriptData.error_message || 'Unknown error',
+            })
+          } else if (attempts >= maxAttempts) {
+            clearInterval(pollInterval)
+            isUploading.value = false
+            toast.error('Transcription timeout', {
+              description: 'Taking too long to process',
+            })
+          }
+        } catch (err: any) {
+          console.error('[END_BOT] Polling error:', err)
+          clearInterval(pollInterval)
+          isUploading.value = false
+          toast.error('Failed to check status', {
+            description: err?.message || 'Unknown error',
+          })
+        }
+      }, 2000) // Poll every 2 seconds
+      
+    } else {
+      console.log('[END_BOT] No transcript in response, will reload after delay')
+      isUploading.value = false
+      // Fallback: reload setelah delay
+      setTimeout(() => {
+        loadLatestZoomTranscript()
+      }, 3000)
+    }
   } catch (err: any) {
     console.error('Failed to end Zoom bot', err)
     toast.error('Failed to end bot', {
       description: err?.message || 'Could not end Zoom bot',
     })
+    isUploading.value = false
   } finally {
     isEndingBot.value = false
   }
@@ -566,41 +643,27 @@ import { AudioLinesIcon } from 'lucide-vue-next'
           type="text"
           placeholder="https://zoom.us/j/123456789 or 123456789"
           class="flex-1 px-3 py-2 text-sm border border-input rounded-md focus:outline-none focus:ring-2 focus:ring-ring"
+          :disabled="!!activeBotId"
         />
         <Button
+          v-if="!activeBotId"
           @click="joinZoomMeeting"
           :disabled="isJoiningZoom || !zoomMeetingLink"
         >
           {{ isJoiningZoom ? 'Joining...' : 'Join' }}
         </Button>
+                <Button
+          v-else
+          @click="endZoomBot"
+          :disabled="isEndingBot"
+          variant="destructive"
+        >
+          {{ isEndingBot ? 'Ending...' : 'End Session' }}
+        </Button>
       </div>
       <p class="text-xs text-muted-foreground">
         Bot akan otomatis join ke meeting dan merekam audio untuk ditranskripsi.
       </p>
-    </div>
-
-    <Separator class="my-3" />
-
-    <div v-if="latestZoomTranscript" class="p-4 border rounded-lg">
-      <p class="text-sm text-muted-foreground mb-2">
-        Latest Zoom Transcript
-      </p>
-
-      <Button
-        variant="outline"
-        @click="
-          () => {
-            emit('update:selectedTranscript', latestZoomTranscript!)
-            emit('update:isDialogOpen', true)
-          }
-        "
-      >
-        Open Latest Zoom Transcript (ID: {{ latestZoomTranscript?.id }})
-      </Button>
-    </div>
-
-    <div v-else class="text-sm text-muted-foreground text-center py-4">
-      Belum ada transcript Zoom terbaru
     </div>
   </TabsContent>
               <!-- TAB: UPLOAD -->

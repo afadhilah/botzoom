@@ -44,10 +44,15 @@ export const useTranscriptStore = defineStore('transcript', () => {
                         if (transcript.status === 'DONE') {
                             clearInterval(pollInterval)
 
+                            console.log('[STORE] Transcription DONE:', transcript)
+                            console.log('[STORE] Segments received:', transcript.segments)
+
                             // Update state with results
                             language.value = transcript.language
                             fullText.value = transcript.full_text || ''
                             segments.value = transcript.segments || []
+
+                            console.log('[STORE] Store segments updated:', segments.value.length)
 
                             loading.value = false
                             return // Exit polling

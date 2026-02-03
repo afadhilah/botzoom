@@ -131,6 +131,5 @@ Internal use only.
 Developed by ICON Plus Team
 
   cd /home/cak-seno/botzoom/frontend && cat .env.production && echo -e "\n--- Building with production config ---" && npx vite build --mode production
-
-  npx vite build
-  sudo systemctl restart nginx
+sudo systemctl restart botzoom-backend
+npx vite build && sudo systemctl restart nginx

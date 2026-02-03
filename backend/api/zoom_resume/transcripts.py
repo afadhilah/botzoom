@@ -188,3 +188,35 @@ def get_transcript_status(
         )
     
     return TranscriptStatusResponse.from_orm(transcript)
+
+
+@router.delete("/{transcript_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_transcript(
+    transcript_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)
+):
+    """
+    Delete transcript and associated files.
+    
+    Args:
+        transcript_id: ID of the transcript to delete
+        db: Database session
+        current_user: Authenticated user
+        
+    Raises:
+        HTTPException: 404 if transcript not found or unauthorized
+    """
+    deleted = TranscriptService.delete_transcript(
+        db, 
+        transcript_id, 
+        user_id=current_user.id
+    )
+    
+    if not deleted:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Transcript not found"
+        )
+    
+    return None

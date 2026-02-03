@@ -94,7 +94,10 @@ export const transcriptApi = {
      * Fetch single transcript by ID.
      */
     async fetchTranscriptById(id: number): Promise<Transcript> {
-        return await http.get<Transcript>(`/transcripts/${id}`)
+        const result = await http.get<Transcript>(`/transcripts/${id}`)
+        console.log('[API] fetchTranscriptById response:', result)
+        console.log('[API] segments in response:', result.segments)
+        return result
     },
 
     /**

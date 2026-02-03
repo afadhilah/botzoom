@@ -57,12 +57,28 @@ class HttpClient {
         return isJson ? response.json() : response.text();
     }
 
+    private getHeaders(customHeaders?: HeadersInit): HeadersInit {
+        // Always get fresh token from localStorage
+        const token = localStorage.getItem('access_token');
+        const headers: HeadersInit = { ...this.defaultHeaders };
+        
+        if (token) {
+            (headers as Record<string, string>)['Authorization'] = `Bearer ${token}`;
+        }
+        
+        if (customHeaders) {
+            Object.assign(headers, customHeaders);
+        }
+        
+        return headers;
+    }
+
     async get<T = any>(endpoint: string, config?: RequestConfig): Promise<T> {
         const url = this.buildURL(endpoint, config?.params);
 
         const response = await fetch(url, {
             method: 'GET',
-            headers: { ...this.defaultHeaders, ...config?.headers },
+            headers: this.getHeaders(config?.headers),
             ...config,
         });
 
@@ -74,7 +90,7 @@ class HttpClient {
 
         const response = await fetch(url, {
             method: 'POST',
-            headers: { ...this.defaultHeaders, ...config?.headers },
+            headers: this.getHeaders(config?.headers),
             body: data ? JSON.stringify(data) : undefined,
             ...config,
         });
@@ -87,7 +103,7 @@ class HttpClient {
 
         const response = await fetch(url, {
             method: 'PUT',
-            headers: { ...this.defaultHeaders, ...config?.headers },
+            headers: this.getHeaders(config?.headers),
             body: data ? JSON.stringify(data) : undefined,
             ...config,
         });
@@ -100,7 +116,7 @@ class HttpClient {
 
         const response = await fetch(url, {
             method: 'DELETE',
-            headers: { ...this.defaultHeaders, ...config?.headers },
+            headers: this.getHeaders(config?.headers),
             ...config,
         });
 
