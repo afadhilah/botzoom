@@ -19,6 +19,7 @@ alembic
 # ============================================================
 pydantic
 pydantic[email]
+bcrypt==4.1.2
 python-jose[cryptography]
 pyjwt
 
@@ -64,3 +65,4 @@ pytest-asyncio
 black
 flake8
 mypy
+psutil==7.2.2

@@ -6,7 +6,7 @@ import torch
 import whisper
 
 WHISPER_MODEL_NAME = "small"
-FORCE_LANGUAGE: Optional[str] = None  # contoh "id" kalau mau paksa
+FORCE_LANGUAGE: Optional[str] = "id"  # Paksa bahasa Indonesia
 
 _device = "cuda" if torch.cuda.is_available() else "cpu"
 _model = whisper.load_model(WHISPER_MODEL_NAME, device=_device)

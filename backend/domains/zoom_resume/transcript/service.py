@@ -191,3 +191,16 @@ class TranscriptService:
         transcripts = query.order_by(Transcript.created_at.desc()).offset(skip).limit(limit).all()
         
         return transcripts, total
+    
+    @staticmethod
+    def get_latest_transcript(db: Session) -> Optional[Transcript]:
+        """
+        Get the most recent transcript (any user).
+        
+        Args:
+            db: Database session
+            
+        Returns:
+            Latest Transcript instance or None
+        """
+        return db.query(Transcript).order_by(Transcript.created_at.desc()).first()

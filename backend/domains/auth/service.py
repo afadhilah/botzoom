@@ -23,28 +23,35 @@ class AuthService:
         """Register a new user and generate OTP."""
         user = UserService.create(db, UserCreate(**signup_data.dict()))
         
-        # Generate and set OTP
-        otp_code = generate_otp(settings.OTP_LENGTH)
-        expires_at = datetime.utcnow() + timedelta(minutes=settings.OTP_EXPIRE_MINUTES)
-        UserService.set_otp(db, user, otp_code, expires_at)
-        
-        # Send OTP via email (with fallback to console in dev mode)
-        if settings.MAIL_USERNAME and settings.MAIL_SERVER:
-            from utils.email import send_otp_email
-            try:
-                send_otp_email(user.email, user.full_name, otp_code)
-                print(f"✅ OTP email sent to {user.email}")
-            except Exception as e:
-                print(f"⚠️ Failed to send OTP email: {e}")
-                # In development, also print to console as fallback
-                if settings.DEBUG:
-                    print(f"🔐 [DEV] OTP for {user.email}: {otp_code}")
-        else:
-            # Email not configured, print to console in dev mode
-            if settings.DEBUG:
-                print(f"🔐 [DEV] Email not configured. OTP for {user.email}: {otp_code}")
-        
+        # ====== OTP DISABLED - AUTO VERIFY USER ======
+        # Bypass OTP verification for development
+        user = UserService.verify_user(db, user)
+        print(f"✅ [DEV] User {user.email} auto-verified (OTP disabled)")
         return user
+        
+        # ====== ORIGINAL OTP CODE (DISABLED) ======
+        # # Generate and set OTP
+        # otp_code = generate_otp(settings.OTP_LENGTH)
+        # expires_at = datetime.utcnow() + timedelta(minutes=settings.OTP_EXPIRE_MINUTES)
+        # UserService.set_otp(db, user, otp_code, expires_at)
+        # 
+        # # Send OTP via email (with fallback to console in dev mode)
+        # if settings.MAIL_USERNAME and settings.MAIL_SERVER:
+        #     from utils.email import send_otp_email
+        #     try:
+        #         send_otp_email(user.email, user.full_name, otp_code)
+        #         print(f"✅ OTP email sent to {user.email}")
+        #     except Exception as e:
+        #         print(f"⚠️ Failed to send OTP email: {e}")
+        #         # In development, also print to console as fallback
+        #         if settings.DEBUG:
+        #             print(f"🔐 [DEV] OTP for {user.email}: {otp_code}")
+        # else:
+        #     # Email not configured, print to console in dev mode
+        #     if settings.DEBUG:
+        #         print(f"🔐 [DEV] Email not configured. OTP for {user.email}: {otp_code}")
+        # 
+        # return user
     
     @staticmethod
     def verify_otp(db: Session, verify_data: OTPVerifyRequest) -> User:

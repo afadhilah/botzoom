@@ -1,358 +1,731 @@
-"""
-Simplified Zoom Bot for joining meetings and recording audio.
-Adapted from cuemeet-zoom-bot for integration with Meeting Transcript backend.
-"""
-
 import os
 import sys
 import time
+import json
 import uuid
 import logging
-from datetime import datetime
-from pathlib import Path
+import requests 
+import platform
+import subprocess
+from datetime import datetime, timezone
+from threading import Event
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException
+from selenium.common.exceptions import TimeoutException, WebDriverException, NoSuchElementException
 from webdriver_manager.chrome import ChromeDriverManager
+from .bot_utils import manage_cookies, extract_zoom_details, create_tar_archive, audio_file_path
 
-from .bot_utils import extract_zoom_details, manage_cookies
+# Optional dependencies - comment out if not available
+# from monitoring import init_highlight
+# from config import Settings
 
 logger = logging.getLogger(__name__)
 
 
-class ZoomBot:
-    """Simplified Zoom bot for meeting integration."""
-    
-    def __init__(
-        self,
-        meeting_link: str,
-        bot_name: str = "Meeting Transcript Bot",
-        min_record_time: int = 7200,
-        output_dir: str = "recordings"
-    ):
-        """
-        Initialize Zoom bot.
-        
-        Args:
-            meeting_link: Zoom meeting URL or ID
-            bot_name: Display name in meeting
-            min_record_time: Minimum recording time in seconds
-            output_dir: Directory to save recordings
-        """
-        self.meeting_id, self.meeting_pwd = extract_zoom_details(meeting_link)
-        self.bot_name = bot_name
+class JoinZoomMeet:
+    def __init__(self, meetlink, start_time_utc=None, end_time_utc=None, min_record_time=3600, bot_name="Zoom Bot", presigned_url_combined=None, presigned_url_audio=None, max_waiting_time=1800, project_settings=None, custom_logger=None, bot_id=None):
+        self.meeting_id, self.meeting_pwd = extract_zoom_details(meetlink)
+        self.start_time_utc = start_time_utc
+        self.end_time_utc = end_time_utc
         self.min_record_time = min_record_time
+        self.bot_name = bot_name
         self.browser = None
-        self.id = str(uuid.uuid4())
-        self.output_dir = Path(output_dir)
-        self.output_dir.mkdir(parents=True, exist_ok=True)
         self.recording_started = False
+        self.recording_start_time = None
+        self.stop_event = Event()
+        self.recording_process = None
+        self.presigned_url_combined = presigned_url_combined
+        self.presigned_url_audio = presigned_url_audio
+        self.id = bot_id or str(uuid.uuid4())  # Use provided bot_id or generate new UUID
+        
+        # Create output directory
+        os.makedirs("out", exist_ok=True)
+        self.output_file = f"out/{self.id}"
+        
+        # Cache directory for Chrome user data (will be cleaned up on session end)
+        self.cache_dir = f"CueMeet{self.id}"
+        
+        self.event_start_time = None
+        self.need_retry = False
+        self.thread_start_time = None
+        self.max_waiting_time = max_waiting_time
+        self.session_ended = False
+        self.project_settings = project_settings
+        self.custom_logger = custom_logger or logger
+        # self.highlight = init_highlight(self.project_settings.HIGHLIGHT_PROJECT_ID, self.project_settings.ENVIRONMENT_NAME, "zoom-bot") if project_settings else None
         
         logger.info(f"Zoom bot initialized: ID={self.id}, Meeting={self.meeting_id}")
-    
+
     def setup_browser(self):
-        """Setup headless Chrome browser with Selenium."""
         options = Options()
         options.add_argument('--headless')
         options.add_argument('--start-maximized')
         options.add_argument('--disable-notifications')
         options.add_argument('--disable-infobars')
-        options.add_argument('user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36')
+        options.add_argument('user-agent=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36')
         options.add_argument('--no-sandbox')
-        options.add_argument('--disable-gpu')
+        options.add_argument("--disable-gpu")
         options.add_argument('--disable-dev-shm-usage')
         options.add_argument('--disable-blink-features=AutomationControlled')
         options.add_experimental_option('excludeSwitches', ['enable-logging', 'enable-automation'])
         options.add_experimental_option('useAutomationExtension', False)
-        
-        # Media stream permissions
+
         options.add_argument("--use-fake-ui-for-media-stream")
         options.add_argument("--use-fake-device-for-media-stream")
+        
+        # Enable audio output and routing to PulseAudio
+        options.add_argument("--enable-features=PulseaudioLoopbackForCast")
+        options.add_argument("--autoplay-policy=no-user-gesture-required")
+
         options.add_experimental_option("prefs", {
             "profile.default_content_setting_values.media_stream_mic": 1,
             "profile.default_content_setting_values.media_stream_camera": 0,
             "profile.default_content_setting_values.geolocation": 0,
             "profile.default_content_setting_values.notifications": 0
         })
-        
-        # User data directory
-        user_data_dir = self.output_dir / f"browser_profile_{self.id}"
-        user_data_dir.mkdir(parents=True, exist_ok=True)
-        options.add_argument(f"user-data-dir={user_data_dir}")
-        
+        options.add_argument("--auto-select-desktop-capture-source=Zoom Meet")
+        options.add_argument(f"user-data-dir={self.cache_dir}")
+
+        # Load the extensions
+        options.add_argument('--load-extension=transcript_extension')
+        options.add_experimental_option("prefs", {
+            "download.prompt_for_download": False,
+            "download.directory_upgrade": True,
+        })
+
+        browser_service = Service(ChromeDriverManager().install())
+
         try:
-            service = Service(ChromeDriverManager().install())
-            self.browser = webdriver.Chrome(service=service, options=options)
+            # Set default PulseAudio sink to virtual-sink for Chrome
+            os.environ['PULSE_SINK'] = 'virtual-sink'
             
-            # Disable alerts
+            self.browser = webdriver.Chrome(
+                service=browser_service,
+                options=options
+            )
             self.browser.execute_script("""
                 window.alert = function() { return; }
                 window.confirm = function() { return true; }
                 window.prompt = function() { return null; }
             """)
-            
-            logger.info("Browser launched successfully")
+            logging.info("Headless browser launched successfully")
         except Exception as e:
-            logger.error(f"Failed to launch browser: {e}")
-            raise
-    
+            logging.error(f"Failed to launch the browser: {e}")
+            self.end_session()
+
+
     def navigate_to_meeting(self):
-        """Navigate to Zoom meeting URL."""
-        logger.info(f"Navigating to meeting ID: {self.meeting_id}")
-        
+        logging.info(f"Navigating to Zoom Meet ID: {self.meeting_id}")
         try:
             self.browser.get(f"https://zoom.us/wc/join/{self.meeting_id}")
-            
-            # Add cookies for auto-join
             for cookie in manage_cookies(self.bot_name):
                 self.browser.add_cookie(cookie)
-            
             self.browser.refresh()
-            logger.info("Successfully navigated to meeting")
-            time.sleep(2)
-            
-            # Check if meeting is invalid
-            try:
-                invalid_msg = WebDriverWait(self.browser, 5).until(
-                    EC.presence_of_element_located((
-                        By.XPATH,
-                        "//span[contains(text(), 'This meeting link is invalid')]"
-                    ))
-                )
-                if invalid_msg:
-                    raise Exception("Meeting link is invalid")
-            except TimeoutException:
-                pass  # Meeting is valid
-                
+            logging.info("Successfully navigated to the Zoom Meet link.")
+            logging.info("Cookies added successfully")
+        except TimeoutException:
+            pass
         except Exception as e:
-            logger.error(f"Failed to navigate to meeting: {e}")
-            raise
-    
-    def join_meeting(self):
-        """Fill credentials and join meeting."""
-        logger.info("Joining meeting...")
-        
+            logging.error(f"Failed to navigate to the meeting link: {e}")
+            self.end_session()
+        time.sleep(2)
         try:
-            # Enter password if required
+            meeting_invalid = WebDriverWait(self.browser, 10).until(
+                EC.any_of(
+                    EC.presence_of_element_located((By.XPATH, "//span[contains(text(), 'This meeting link is invalid (3,001)')]")),
+                    EC.presence_of_element_located((By.CLASS_NAME, "error-message"))
+                )
+            )
+            if meeting_invalid:
+                logging.info("Meeting link is invalid. Ending session.")
+                self.end_session()
+        except TimeoutException:
+            pass
+        except Exception as e:
+            logging.error(f"Failed to check if meeting link is invalid: {e}")
+            self.end_session()
+
+
+    def connect_audio(self):
+        logging.info("Connecting to audio...")
+        try:
+            join_audio_button = WebDriverWait(self.browser, 5).until(
+                EC.element_to_be_clickable((By.XPATH, '//button[@aria-label="Join Audio"]'))
+            )
+            join_audio_button.click()
+            logging.info("Audio connected.")
+        except Exception:
+            logging.info("Join Audio button not found or already connected.")
+        
+        time.sleep(1)
+
+        try:
+            # Handle audio mute/unmute
+            audio_button = WebDriverWait(self.browser, 5).until(
+                EC.presence_of_element_located((By.XPATH, '//button[@aria-label="Mute" or @aria-label="Unmute"]'))
+            )
+            current_state = audio_button.get_attribute('aria-label')
+            if current_state == "Unmute":
+                logging.info("Audio is already muted.")
+            else:
+                audio_button.click()
+                logging.info("Audio muted successfully.")
+        except Exception: 
+            pass
+
+        try:
+            # Handle video stop/start
+            video_button = WebDriverWait(self.browser, 5).until(
+                EC.presence_of_element_located((By.XPATH, '//button[@aria-label="Stop Video" or @aria-label="Start Video"]'))
+            )
+            current_state = video_button.get_attribute('aria-label')
+            if current_state == "Start Video":
+                logging.info("Video is already stopped.")
+            else:
+                video_button.click()
+                logging.info("Video stopped successfully.")
+        except Exception:
+            pass
+
+    def join_meeting(self):
+        # 1. Fill credentials if present
+        try:
+            logging.info("Attempting to join the meeting.") 
             try:
                 password_input = WebDriverWait(self.browser, 5).until(
                     EC.presence_of_element_located((By.XPATH, "//input[@id='input-for-pwd']"))
                 )
-                if self.meeting_pwd:
-                    password_input.send_keys(self.meeting_pwd)
-                    logger.info("Entered meeting password")
+                password_input.send_keys(self.meeting_pwd)
+                logging.info(f"Entered the meeting password.")
             except TimeoutException:
-                pass  # No password required
-            
-            # Enter bot name
-            try:
+                pass
+
+            try: 
                 name_input = WebDriverWait(self.browser, 5).until(
                     EC.presence_of_element_located((By.XPATH, "//input[@id='input-for-name']"))
                 )
                 name_input.clear()
                 name_input.send_keys(self.bot_name)
-                logger.info(f"Entered bot name: {self.bot_name}")
+                logging.info(f"Entered the bot name: {self.bot_name}")
             except TimeoutException:
                 pass
             
             time.sleep(2)
             
-            # Click join button
             try:
                 join_button = WebDriverWait(self.browser, 5).until(
                     EC.element_to_be_clickable((By.XPATH, '//button[contains(text(), "Join")]'))
                 )
                 join_button.click()
-                logger.info("Clicked join button")
-            except TimeoutException:
-                logger.warning("Join button not found - might have auto-joined")
-            
-            time.sleep(3)
-            
-        except Exception as e:
-            logger.error(f"Error joining meeting: {e}")
-            raise
-    
-    def connect_audio(self):
-        """Connect to audio and mute microphone."""
-        logger.info("Connecting audio...")
-        
-        try:
-            # Click "Join Audio" button
-            try:
-                audio_button = WebDriverWait(self.browser, 5).until(
-                    EC.element_to_be_clickable((By.XPATH, '//button[@aria-label="Join Audio"]'))
-                )
-                audio_button.click()
-                logger.info("Audio connected")
-            except TimeoutException:
-                logger.info("Audio already connected or button not found")
-            
-            time.sleep(1)
-            
-            # Mute audio
-            try:
-                mute_button = WebDriverWait(self.browser, 5).until(
-                    EC.presence_of_element_located((
-                        By.XPATH,
-                        '//button[@aria-label="Mute" or @aria-label="Unmute"]'
-                    ))
-                )
-                current_state = mute_button.get_attribute('aria-label')
-                if current_state == "Mute":
-                    mute_button.click()
-                    logger.info("Audio muted")
-                else:
-                    logger.info("Audio already muted")
+                logging.info("Clicked the 'Join' button successfully.")
             except TimeoutException:
                 pass
-            
-            # Stop video
-            try:
-                video_button = WebDriverWait(self.browser, 5).until(
-                    EC.presence_of_element_located((
-                        By.XPATH,
-                        '//button[@aria-label="Stop Video" or @aria-label="Start Video"]'
-                    ))
-                )
-                current_state = video_button.get_attribute('aria-label')
-                if current_state == "Stop Video":
-                    video_button.click()
-                    logger.info("Video stopped")
-                else:
-                    logger.info("Video already stopped")
-            except TimeoutException:
-                pass
-                
+
         except Exception as e:
-            logger.error(f"Error connecting audio: {e}")
-    
-    def wait_for_admission(self, timeout=1800):
-        """Wait for host to admit bot from waiting room."""
-        logger.info("Checking for waiting room...")
-        
-        start_time = time.time()
-        
-        while time.time() - start_time < timeout:
-            try:
-                # Check if in waiting room
-                waiting_msg = WebDriverWait(self.browser, 5).until(
-                    EC.presence_of_element_located((
-                        By.XPATH,
-                        "//span[contains(text(), 'host will admit you') or contains(text(), 'Waiting for the host')]"
-                    ))
-                )
-                
-                if waiting_msg:
-                    logger.info("In waiting room, waiting for host to admit...")
-                    time.sleep(10)
-                    continue
-                    
-            except TimeoutException:
-                # Not in waiting room or admitted
-                break
-        
-        # Check if admitted
+            logging.error(f"Error during join input phase: {e}")
+
+        # 2. Try to connect audio immediately (in case join was direct)
+        self.connect_audio()
+        time.sleep(4)
+
+
+
+    def check_meeting_removal(self):        
         try:
-            participants = WebDriverWait(self.browser, 10).until(
-                EC.presence_of_element_located((By.XPATH, "//span[contains(text(), 'Participants')]"))
+            removed_text = WebDriverWait(self.browser, 5).until(
+                EC.any_of(
+                    EC.presence_of_element_located((By.XPATH, "//div[contains(text(), 'You have been removed')]")),
+                    EC.presence_of_element_located((By.XPATH, "//div[contains(text(), 'Leave meeting')]"))
+                )
             )
-            if participants:
-                logger.info("Admitted to meeting!")
+            if removed_text:
+                logging.info("Detected removal from meeting from the host. Ending session.")
+                self.end_session()
+        except TimeoutException:
+            pass
+
+
+    def check_meeting_end(self): 
+        try:
+            return_button = WebDriverWait(self.browser, 5).until(
+                EC.presence_of_element_located((By.XPATH, "//div[contains(text(), 'This meeting has been ended by host')]"))
+            )
+            if return_button:
+                logging.info("Detected 'Return to home screen' button. Meeting has ended.")
+                self.end_session()
+        except TimeoutException:
+            pass
+        try:
+            ended_message = WebDriverWait(self.browser, 5).until(
+                EC.presence_of_element_located((By.XPATH, "//span[contains(text(), 'The call ended because everyone left')]"))
+            )
+            if ended_message:
+                logging.info("Detected 'The call ended because everyone left' button. Meeting has ended.")
+                self.end_session()
+        except TimeoutException:
+            pass
+
+
+    def check_end_signal(self):
+        """Check if end session signal file exists (created by API endpoint)."""
+        try:
+            stop_flag_file = f"out/{self.id}.stop"
+            if os.path.exists(stop_flag_file):
+                logging.info("Detected end session signal from API. Leaving meeting...")
+                # Remove the flag file
+                try:
+                    os.remove(stop_flag_file)
+                except Exception as e:
+                    logging.warning(f"Failed to remove stop flag file: {e}")
+                # Leave the meeting properly before ending session
+                self.leave()
+        except Exception as e:
+            logging.error(f"Error checking end signal: {e}")
+
+
+    def check_waiting_room(self):
+        try:
+            waiting_room = WebDriverWait(self.browser, 10).until(
+                EC.any_of(
+                    EC.presence_of_element_located((By.XPATH, "//span[contains(text(), \"The host will admit you when they're ready\")]")),
+                    EC.presence_of_element_located((By.XPATH, "//span[contains(text(), \"Waiting for the host to start the meeting.\")]")),
+                    EC.presence_of_element_located((By.XPATH, "//span[contains(text(), \"Host has joined. We've let them know you're here.\")]")),
+                )
+            )
+            if waiting_room:
                 return True
         except TimeoutException:
-            logger.warning("Could not confirm admission to meeting")
-        
+            pass
+        except Exception as e:
+            logging.error(f"Failed to handle the waiting room: {e}")
         return False
-    
-    def monitor_meeting(self):
-        """Monitor meeting status and handle events."""
-        logger.info(f"Monitoring meeting for up to {self.min_record_time} seconds...")
-        
-        start_time = time.time()
-        
-        while time.time() - start_time < self.min_record_time:
-            try:
-                # Check if meeting ended
-                ended_msgs = [
-                    "//div[contains(text(), 'meeting has been ended')]",
-                    "//div[contains(text(), 'You have been removed')]",
-                    "//span[contains(text(), 'call ended because everyone left')]"
-                ]
-                
-                for xpath in ended_msgs:
-                    try:
-                        msg = WebDriverWait(self.browser, 2).until(
-                            EC.presence_of_element_located((By.XPATH, xpath))
-                        )
-                        if msg:
-                            logger.info("Meeting ended - detected end message")
-                            return
-                    except TimeoutException:
-                        continue
-                
-                # Check for unmute requests
-                try:
-                    unmute_request = self.browser.find_element(
-                        By.XPATH,
-                        "//div[contains(text(), 'would like you to unmute')]"
-                    )
-                    if unmute_request:
-                        logger.info("Detected unmute request - staying muted")
-                        # Click decline or close button if available
-                except:
-                    pass
-                
-                time.sleep(5)  # Check every 5 seconds
-                
-            except Exception as e:
-                logger.error(f"Error monitoring meeting: {e}")
-                break
-        
-        logger.info("Monitoring timeout reached")
-    
-    def cleanup(self):
-        """Cleanup browser and resources."""
-        logger.info("Cleaning up bot resources...")
-        
-        if self.browser:
-            try:
-                self.browser.quit()
-                logger.info("Browser closed")
-            except Exception as e:
-                logger.error(f"Error closing browser: {e}")
-    
-    def run(self):
-        """Main bot execution flow."""
+
+
+    def check_unmute_request(self):
         try:
-            logger.info("Starting Zoom bot...")
+            unmute_request = WebDriverWait(self.browser, 5).until(
+                EC.presence_of_element_located((By.XPATH, "//div[contains(text(), 'The host would like you to unmute')]"))
+            )
+            if unmute_request:
+                logging.info("Detected unmute request. Attempting to mute audio...")
+                mute_button = WebDriverWait(self.browser, 5).until(
+                    EC.element_to_be_clickable((By.XPATH, "//button[contains(text(), 'Mute')]"))
+                )
+                if mute_button:
+                    mute_button.click()
+                    logging.info("Audio muted.")
+        except TimeoutException:
+            pass
+        except Exception as e:
+            pass
+
+
+    def check_admission(self):
+        try:
+            # Check if admitted to the meeting
+            admitted = WebDriverWait(self.browser, 5).until(
+                EC.presence_of_element_located((By.XPATH, "//span[contains(text(), 'Participants')]"))
+            )
+            if admitted and not self.recording_started:
+                logging.info("Admitted to the meeting. Starting recording...")
+                # Re-attempt audio connection if it failed previously or to ensure it's connected
+                self.connect_audio()
+                self.start_recording()
+                self.recording_started = True
+        except TimeoutException:
+            pass
+        try:
+            # Check if join request was denied
+            denied_message = WebDriverWait(self.browser, 5).until(
+                EC.presence_of_element_located((By.XPATH, "//div[contains(text(), \"You can't join this call\")]"))
+            )
+            if denied_message:
+                logging.error("Join request was denied 'User initialed'. Ending session...")
+                self.need_retry = True
+        except TimeoutException:
+            pass
+        try:
+            # Check for any error messages
+            error_message = WebDriverWait(self.browser, 5).until(
+                EC.presence_of_element_located((By.CLASS_NAME, "error-message"))
+            )
+            if error_message:
+                logging.error(error_message.text)
+                if "denied your request to join" in error_message.text:
+                    logging.error("Join request was denied 'Platform initialed'. Ending session...")
+                    self.end_session()
+        except TimeoutException:
+            pass
+
+
+    def attendee_count(self):
+        count = -1
+        try: 
+            element = WebDriverWait(self.browser, 10).until(
+                EC.presence_of_element_located((By.XPATH, '//span[@class="footer-button__number-counter"]'))
+            )
+            count_text = element.get_attribute('textContent').strip()
+            if count_text.isdigit():
+                count = int(count_text)
+        except TimeoutException:
+            logging.error("Attendee count not found.")
+        except NoSuchElementException:
+            logging.info("Member count element not found. Likely the count is 0.")
+        return count
+
+
+    def start_recording(self):
+        logging.info("Starting meeting audio recording with FFmpeg...")
+        output_audio_file = f'{self.output_file}.opus'
+        
+        if platform.system() == 'Darwin':
+            command = [
+                "ffmpeg",
+                "-f", "avfoundation",
+                "-i", ":0",
+                "-acodec", "libopus",
+                "-b:a", "128k",
+                "-ac", "1",  
+                "-ar", "48000",
+                output_audio_file
+            ]
+        elif platform.system() == 'Linux':  
+            command = [
+                "ffmpeg",
+                "-f", "pulse",
+                "-i", "virtual-sink.monitor",
+                "-af", "aresample=async=1000",  # Help with audio synchronization
+                "-acodec", "libopus",
+                "-application", "audio",  # Optimize for audio quality
+                "-b:a", "256k",  # Higher bitrate for better quality
+                "-vbr", "on",  # Variable bitrate for better quality/size balance
+                "-frame_duration", "60",  # Longer frames for more stable encoding
+                "-ac", "1",
+                "-ar", "48000",
+                output_audio_file
+            ]
+        else:
+            logging.error("Unsupported operating system for recording.")
+            self.end_session()
+        try:
+            logging.info(f"Executing FFmpeg command: {' '.join(command)}")
             
-            # Setup browser
-            self.setup_browser()
+            # Open stderr log file for FFmpeg debugging
+            ffmpeg_log = open(f'{self.output_file}_ffmpeg.log', 'w')
             
-            # Navigate and join
+            # Set PulseAudio environment for FFmpeg
+            pulse_env = os.environ.copy()
+            pulse_server = os.environ.get('PULSE_SERVER', f'/run/user/{os.getuid()}/pulse/native')
+            pulse_env['PULSE_SERVER'] = pulse_server
+            
+            self.event_start_time = datetime.now(timezone.utc)
+            self.recording_process = subprocess.Popen(
+                command, 
+                stdout=ffmpeg_log, 
+                stderr=subprocess.STDOUT,
+                env=pulse_env
+            )
+            self.recording_started = True
+            self.recording_start_time = time.perf_counter()
+            logging.info(f"Recording started. Output will be saved to {output_audio_file}")
+            logging.info(f"FFmpeg logs will be saved to {self.output_file}_ffmpeg.log")
+            logging.info(f"Using PULSE_SERVER: {pulse_server}")
+        except subprocess.CalledProcessError as e:
+            logging.error(f"Error starting FFmpeg: {e}")
+            logging.error(f"FFmpeg output: {e.output}")
+        except Exception as e:
+            logging.error(f"Unexpected error starting recording: {e}")
+
+
+    def stop_recording(self):
+        if self.recording_started and self.recording_process:
+            logging.info("Stopping audio recording...")
+            self.recording_process.terminate()
+            try:
+                self.recording_process.wait()
+                logging.info("Recording stopped.")
+            except subprocess.TimeoutExpired:
+                logging.warning("Recording process did not terminate in time. Forcibly killing it.")
+                self.recording_process.kill()
+                logging.info("Recording process killed.")
+        else:
+            logging.info("No recording was started, nothing to stop.")
+
+
+    def save_transcript(self):
+        if not self.browser:
+            logging.error("Browser is not available. Cannot save transcript.")
+            return
+        
+        try:
+            transcript_data = self.browser.execute_script("return localStorage.getItem('transcript');")
+            chat_messages_data = self.browser.execute_script("return localStorage.getItem('chatMessages');")
+            meeting_title = self.browser.execute_script("return localStorage.getItem('meetingTitle');")
+
+            transcript = json.loads(transcript_data) if transcript_data else None
+            chat_messages = json.loads(chat_messages_data) if chat_messages_data else None
+
+            # Create a dictionary to hold all the data
+            transcript_json = {
+                'title': meeting_title if meeting_title else None,
+                'meeting_start_time': self.event_start_time.isoformat() if self.event_start_time else None,
+                'meeting_end_time': datetime.now(timezone.utc).isoformat(),
+                'transcript': transcript,
+                'chat_messages': chat_messages,
+            }
+
+            # Write the dictionary to a JSON file
+            full_path = os.path.join(os.getcwd(), f"{self.output_file}.json")
+            with open(full_path, 'w', encoding='utf-8') as file:
+                json.dump(transcript_json, file, ensure_ascii=False, indent=2)
+            logging.info(f"Transcript saved to {self.output_file}.json")
+        except json.JSONDecodeError as e:
+            logging.error(f"Invalid JSON format in localStorage: {e}")
+        except Exception as e:
+            logging.error(f"Error downloading transcript: {e}")
+
+
+    def upload_files(self):
+        try: 
+            if self.presigned_url_combined:
+                full_path = create_tar_archive(f"{self.output_file}.json", f"{self.output_file}.opus", self.output_file)
+                if full_path and os.path.exists(full_path):
+                    logging.info(f"Attempting to upload the Tar file from path: {full_path}")
+                    try:
+                        logging.info(f"Uploading {f'{self.output_file}.tar'} to pre-signed URL...")
+                        with open(full_path, 'rb') as file:
+                            response = requests.put(self.presigned_url_combined, data=file, headers={'Content-Type': 'application/x-tar'})
+                            response.raise_for_status()
+                        logging.info("Tar file uploaded successfully.")
+                    except Exception as e:
+                        logging.error(f"Error uploading the Tar file: {e}")
+                else:
+                    logging.error(f"Tar file does not exist at: {full_path}")
+            else:
+                logging.info("No pre-signed Tar URL provided or no Tar file to upload.")
+            
+            if self.presigned_url_audio:
+                full_path = audio_file_path(f"{self.output_file}.opus")
+                if full_path and os.path.exists(full_path):
+                    logging.info(f"Attempting to upload the Audio file from path: {full_path}")
+                    try:
+                        logging.info(f"Uploading {f'{self.output_file}.opus'} to pre-signed URL...")
+                        with open(full_path, 'rb') as file:
+                            response = requests.put(self.presigned_url_audio, data=file, headers={'Content-Type': 'audio/opus'})
+                            response.raise_for_status()
+                        logging.info("Audio file uploaded successfully.")
+                    except Exception as e:
+                        logging.error(f"Error uploading the Audio file: {e}")
+                else:
+                    logging.error(f"Audio file does not exist at: {full_path}")
+            else:
+                logging.info("No pre-signed Audio URL provided or no Audio file to upload.")
+        except Exception as e:
+            logging.error(f"Error during file upload: {e}")
+    
+
+    def end_session(self):
+        if self.session_ended:
+            logging.info("Session has already been ended. Skipping end_session method call.")
+            return
+        self.session_ended = True
+        logging.info("Ending the session...")
+        try:
+            time.sleep(10)
+            if self.browser and self.recording_started:
+                logging.info("Initiating transcript save...")
+                try:
+                    self.save_transcript()
+                    logging.info("Transcript is saved.")
+                except Exception as e:
+                    logging.error(f"Failed to save transcript: {e}")
+            time.sleep(20)
+            if self.browser:
+                try:
+                    self.browser.quit()
+                    logging.info("Browser closed.")
+                except Exception as e:
+                    logging.error(f"Failed to close browser: {e}")
+            
+            # Cleanup Chrome cache directory
+            try:
+                import shutil
+                if os.path.exists(self.cache_dir):
+                    shutil.rmtree(self.cache_dir)
+                    logging.info(f"Cleaned up cache directory: {self.cache_dir}")
+            except Exception as e:
+                logging.warning(f"Failed to cleanup cache directory {self.cache_dir}: {e}")
+            
+            self.stop_event.set()
+            if self.recording_started:
+                self.stop_recording()
+                self.upload_files()
+            else:
+                logging.info("No recording was started during this session.")
+        except Exception as e:
+            logging.error("Error during session cleanup %s", str(e), exc_info=True)
+        finally:
+            logging.info("Session ended successfully.")
+            sys.exit(0)
+
+    def leave(self):
+        """Leave the meeting manually."""
+        logger.info("Leaving meeting...")
+        
+        try:
+            # Click leave button
+            try:
+                leave_button = WebDriverWait(self.browser, 5).until(
+                    EC.element_to_be_clickable((By.XPATH, '//button[@aria-label="Leave"]'))
+                )
+                leave_button.click()
+                logger.info("Clicked leave button")
+                time.sleep(1)
+                
+                # Confirm leave if dialog appears
+                try:
+                    confirm_button = WebDriverWait(self.browser, 3).until(
+                        EC.element_to_be_clickable((By.XPATH, '//button[contains(text(), "Leave") or contains(text(), "End")]'))
+                    )
+                    confirm_button.click()
+                    logger.info("Confirmed leave")
+                except TimeoutException:
+                    pass  # No confirmation dialog
+                    
+            except TimeoutException:
+                logger.warning("Leave button not found - might have already left")
+                
+        except Exception as e:
+            logger.error(f"Error leaving meeting: {e}")
+        finally:
+            # Always end session after leaving
+            self.end_session()
+
+    def monitor_meeting(self, initial_elapsed_time=0):
+        logging.info("Started monitoring the meeting.")
+        start_time = time.perf_counter() - initial_elapsed_time
+
+        low_member_count_end_time = None
+
+        while not self.stop_event.is_set():
+            current_time = time.perf_counter()
+            elapsed_time = current_time - start_time
+            # Before being admitted, check if max_waiting_time has been exceeded
+            if not self.recording_started:
+                if elapsed_time > self.max_waiting_time:
+                    logging.info(f"Maximum waiting time ({self.max_waiting_time} seconds) exceeded. Ending session.")
+                    break
+            else: 
+                recording_elapsed_time = current_time - self.recording_start_time
+                if recording_elapsed_time > self.min_record_time:
+                    logging.info(f"Minimum recording time ({self.min_record_time} seconds) reached. Ending session.")
+                    break
+            if self.need_retry:
+                logging.info("Need to retry joining the meeting. Exiting monitoring loop.")
+                break
+
+            try:
+                self.check_end_signal()
+                self.check_meeting_end()
+                self.check_meeting_removal()
+                self.check_admission()
+                self.check_unmute_request()
+
+                if self.check_waiting_room() is False:
+                    # We are in the meeting
+                    members = self.attendee_count()
+                    if members > 1:
+                        # Other participants are present; reset the low member count timer
+                        if low_member_count_end_time is not None:
+                            logging.info("Member count increased. Cancelling 5-minute timer.")
+                            low_member_count_end_time = None
+                    else:
+                        # Only the bot is in the meeting
+                        if low_member_count_end_time is None:
+                            low_member_count_end_time = current_time + 300  # 5 minutes
+                            logging.info("Member count is 1 or less. Starting 5-minute timer.")
+                        else:
+                            time_left = int((low_member_count_end_time - current_time) / 60)
+                            if time_left <= 0:
+                                logging.info("Member count has been 1 or less for 5 minutes. Ending session.")
+                                break
+                            else:
+                                logging.info(f"Member count still low. {time_left} minutes left before ending session.")
+                else:
+                    # Waiting to be admitted to the meeting
+                    logging.info("Waiting to be admitted to the meeting.")
+            except WebDriverException:
+                logging.error("Browser has been closed. Stopping monitoring.")
+                break
+            except Exception as e:
+                logging.error(f"Error during monitoring: {e}")
+            time.sleep(2)
+
+
+    def retry_join(self):
+        logging.info("Retrying to join the meeting...")
+        time.sleep(12)
+        try:
+            self.browser.refresh()
             self.navigate_to_meeting()
             self.join_meeting()
-            self.connect_audio()
-            
-            # Wait for admission if in waiting room
-            admitted = self.wait_for_admission()
-            
-            if not admitted:
-                logger.warning("Could not confirm admission - continuing anyway")
-            
-            # Monitor meeting
-            self.recording_started = True
-            self.monitor_meeting()
-            
-            logger.info("Bot session completed successfully")
-            
         except Exception as e:
-            logger.error(f"Bot error: {e}")
-            raise
+            logging.error("Error during retry join: %s", str(e), exc_info=True)
+            self.end_session()
+
+
+    def run(self):
+        try:
+            logging.info("Meeting bot execution started.")
+            self.setup_browser()
+            self.navigate_to_meeting()
+            self.join_meeting()
+
+            self.thread_start_time = time.perf_counter()
+            total_elapsed_time = 0
+
+            self.stop_event.clear()
+            self.need_retry = False
+
+            while True:
+                self.monitor_meeting(initial_elapsed_time=total_elapsed_time)
+                total_elapsed_time = time.perf_counter() - self.thread_start_time
+
+                if self.need_retry:
+                    logging.info("Retry flag is set. Proceeding to retry joining the meeting.")
+                    self.need_retry = False
+                    self.retry_join()
+                else:
+                    logging.info("Monitoring completed without retry. Exiting.")
+                    break
+
+        except Exception as e:
+            logging.error("An error occurred during the meeting session. %s", str(e), exc_info=True)
         finally:
-            self.cleanup()
+            logging.info("Finalizing the meeting session.")
+            self.end_session()
+        logging.info("Meeting bot has successfully completed its run.")
+
+
+# Alias for compatibility with run_zoom_bot.py
+class ZoomBot(JoinZoomMeet):
+    """Simplified Zoom bot wrapper for backward compatibility."""
+    
+    def __init__(self, meeting_link: str, bot_name: str = "Meeting Transcript Bot", 
+                 min_record_time: int = 7200, output_dir: str = "recordings", bot_id: str = None):
+        # Call parent with compatible parameters
+        super().__init__(
+            meetlink=meeting_link,
+            start_time_utc=None,
+            end_time_utc=None,
+            min_record_time=min_record_time,
+            bot_name=bot_name,
+            presigned_url_combined=None,
+            presigned_url_audio=None,
+            max_waiting_time=1800,
+            bot_id=bot_id
+        )

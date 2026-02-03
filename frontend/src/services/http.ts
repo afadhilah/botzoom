@@ -1,3 +1,5 @@
+import API_CONFIG from './config';
+
 interface RequestConfig extends RequestInit {
     params?: Record<string, string | number | boolean>;
 }
@@ -12,7 +14,7 @@ class HttpClient {
     private baseURL: string;
     private defaultHeaders: HeadersInit;
 
-    constructor(baseURL: string = 'http://localhost:8000') {
+    constructor(baseURL: string = API_CONFIG.baseURL) {
         this.baseURL = baseURL;
         this.defaultHeaders = {
             'Content-Type': 'application/json',
@@ -20,15 +22,27 @@ class HttpClient {
     }
 
     private buildURL(endpoint: string, params?: Record<string, string | number | boolean>): string {
-        const url = new URL(endpoint, this.baseURL);
+        // Handle relative baseURL (like /api)
+        let fullURL: string;
+        if (this.baseURL.startsWith('http')) {
+            // Absolute URL
+            fullURL = new URL(endpoint, this.baseURL).toString();
+        } else {
+            // Relative URL - just concatenate
+            const base = this.baseURL.endsWith('/') ? this.baseURL.slice(0, -1) : this.baseURL;
+            const path = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
+            fullURL = `${base}${path}`;
+        }
 
         if (params) {
+            const url = new URL(fullURL, window.location.origin);
             Object.entries(params).forEach(([key, value]) => {
                 url.searchParams.append(key, String(value));
             });
+            return url.toString();
         }
 
-        return url.toString();
+        return fullURL;
     }
 
     private async handleResponse<T>(response: Response): Promise<T> {

@@ -16,13 +16,21 @@ from core.exceptions import AppException
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
 
-@router.post("/signup", response_model=MessageResponse, status_code=status.HTTP_201_CREATED)
+@router.post("/signup", response_model=TokenResponse, status_code=status.HTTP_201_CREATED)
 def signup(signup_data: SignupRequest, db: Session = Depends(get_db)):
-    """Register a new user and send OTP."""
+    """Register a new user (OTP disabled - auto login)."""
     try:
         user = AuthService.signup(db, signup_data)
-        return MessageResponse(
-            message=f"User registered successfully. OTP sent to {user.email}. Check database for OTP in development."
+        
+        # Auto-login after signup (OTP disabled)
+        from core.jwt import create_access_token, create_refresh_token
+        token_data = {"sub": str(user.id), "email": user.email}
+        access_token = create_access_token(token_data)
+        refresh_token = create_refresh_token(token_data)
+        
+        return TokenResponse(
+            access_token=access_token,
+            refresh_token=refresh_token
         )
     except AppException as e:
         raise HTTPException(status_code=e.status_code, detail=e.message)

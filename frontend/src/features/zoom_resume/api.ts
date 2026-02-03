@@ -71,6 +71,26 @@ export const transcriptApi = {
     },
 
     /**
+     * End Zoom bot session.
+     */
+    async endZoomBot(botId: string): Promise<{ 
+        message: string
+        bot_id: string
+        pid: number
+        transcript?: {
+            status: string
+            transcript_id: number
+            language?: string
+            segments_count?: number
+            error?: string
+        }
+    }> {
+        return await http.post('/zoom/end', {
+            bot_id: botId
+        })
+    },
+
+    /**
      * Fetch single transcript by ID.
      */
     async fetchTranscriptById(id: number): Promise<Transcript> {

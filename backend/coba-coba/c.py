@@ -10,10 +10,10 @@ import whisper
 # ========= KONFIGURASI =========
 
 # Folder input audio
-AUDIO_DIR = r"D:\Project\PLN\Test\Meeting-Transcript\storage\audio"  # ganti sesuai folder lu
+AUDIO_DIR = r"/home/cak-seno/botzoom/storage/audio"  # ganti sesuai folder lu
 
 # Folder output transcript JSON
-OUTPUT_DIR = r"D:\Project\PLN\Test\Meeting-Transcript\storage\transcripts_openai"
+OUTPUT_DIR = r"/home/cak-seno/botzoom/storage/transcripts_openai"
 
 # Model Whisper yang dipakai
 WHISPER_MODEL_NAME = "small"  # "tiny" | "base" | "small" | "medium" | "large"
@@ -26,7 +26,7 @@ FORCE_LANGUAGE = None  # contoh: "id" kalau mau paksa Indonesia
 
 def list_audio_files(folder: str) -> List[Path]:
     """Ambil semua file audio dari folder."""
-    exts = {".wav", ".mp3", ".m4a", ".flac"}
+    exts = {".wav", ".mp3", ".m4a", ".flac", ".opus", ".aac"}
     # exts = {".mp3"}
     p = Path(folder)
     if not p.exists():

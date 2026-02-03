@@ -36,6 +36,8 @@ import { transcriptApi } from '@/features/zoom_resume/api'
 const latestZoomTranscript = ref<Transcript | null>(null)
 const zoomMeetingLink = ref('')
 const isJoiningZoom = ref(false)
+const activeBotId = ref<string | null>(null)
+const isEndingBot = ref(false)
 
 const props = defineProps<{
   isDialogOpen: boolean
@@ -61,7 +63,8 @@ async function joinZoomMeeting() {
   
   isJoiningZoom.value = true
   try {
-    await transcriptApi.joinZoomMeeting(zoomMeetingLink.value)
+    const response = await transcriptApi.joinZoomMeeting(zoomMeetingLink.value)
+    activeBotId.value = response.bot_id
     
     toast.success('Bot joining meeting', {
       description: 'Zoom bot is joining the meeting and will start recording.',
@@ -81,6 +84,33 @@ async function joinZoomMeeting() {
     })
   } finally {
     isJoiningZoom.value = false
+  }
+}
+
+async function endZoomBot() {
+  if (!activeBotId.value) return
+  
+  isEndingBot.value = true
+  try {
+    await transcriptApi.endZoomBot(activeBotId.value)
+    
+    toast.success('Bot session ending', {
+      description: 'Zoom bot will leave the meeting shortly.',
+    })
+    
+    activeBotId.value = null
+    
+    // Reload transcript after delay
+    setTimeout(() => {
+      loadLatestZoomTranscript()
+    }, 3000)
+  } catch (err: any) {
+    console.error('Failed to end Zoom bot', err)
+    toast.error('Failed to end bot', {
+      description: err?.message || 'Could not end Zoom bot',
+    })
+  } finally {
+    isEndingBot.value = false
   }
 }
 

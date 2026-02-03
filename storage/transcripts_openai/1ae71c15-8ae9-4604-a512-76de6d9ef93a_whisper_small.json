@@ -1,0 +1,27 @@
+{
+  "audio_file": "/home/cak-seno/botzoom/storage/audio/1ae71c15-8ae9-4604-a512-76de6d9ef93a.opus",
+  "model": "small",
+  "device": "cpu",
+  "language": "id",
+  "text": "Halo guys, kenali nama Guadil dari Selabah Yad. Sini saya mau mengelalkan sebuah project saya, yaitu Nijum Dashboard Transcript Meeting.",
+  "segments": [
+    {
+      "id": 0,
+      "start": 0.0,
+      "end": 8.0,
+      "text": "Halo guys, kenali nama Guadil dari Selabah Yad."
+    },
+    {
+      "id": 1,
+      "start": 8.0,
+      "end": 18.0,
+      "text": "Sini saya mau mengelalkan sebuah project saya,"
+    },
+    {
+      "id": 2,
+      "start": 18.0,
+      "end": 24.0,
+      "text": "yaitu Nijum Dashboard Transcript Meeting."
+    }
+  ]
+}

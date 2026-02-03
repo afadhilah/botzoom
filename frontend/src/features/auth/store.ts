@@ -3,7 +3,7 @@ import { ref, computed } from 'vue';
 import { authApi } from './api';
 import { TokenService } from '@/services/token.service';
 import { setAuthToken, clearAuthToken } from '@/services/auth.interceptor';
-import type { User, LoginRequest, SignupRequest, OTPVerifyRequest } from './types';
+import type { User, LoginRequest, SignupRequest } from './types';
 
 export const useAuthStore = defineStore('auth', () => {
     const user = ref<User | null>(null);
@@ -27,24 +27,8 @@ export const useAuthStore = defineStore('auth', () => {
         }
     }
 
-    async function verifyOTP(data: OTPVerifyRequest): Promise<void> {
-        isLoading.value = true;
-        error.value = null;
-
-        try {
-            const response = await authApi.verifyOTP(data);
-
-            TokenService.setTokens(response.access_token, response.refresh_token);
-            setAuthToken(response.access_token);
-
-            await fetchCurrentUser();
-        } catch (err: any) {
-            error.value = err.message || 'OTP verification failed';
-            throw err;
-        } finally {
-            isLoading.value = false;
-        }
-    }
+    // OTP DISABLED - Function removed
+    // async function verifyOTP(data: OTPVerifyRequest): Promise<void> { ... }
 
     async function login(data: LoginRequest): Promise<void> {
         isLoading.value = true;
@@ -128,7 +112,7 @@ export const useAuthStore = defineStore('auth', () => {
         error,
         isAuthenticated,
         signup,
-        verifyOTP,
+        // verifyOTP, // OTP DISABLED - Removed from exports
         login,
         logout,
         fetchCurrentUser,

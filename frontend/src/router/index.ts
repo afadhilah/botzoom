@@ -6,7 +6,7 @@ import DashboardPage from "@/pages/dashboard/OverviewPage.vue"
 import TranscriptMeeting from "@/pages/zoom_resume/TranscriptMeeting.vue"
 import LoginPage from "@/pages/auth/LoginPage.vue"
 import SignupPage from "@/pages/auth/SignupPage.vue"
-import OTPPage from "@/pages/auth/OtpPage.vue"
+// import OTPPage from "@/pages/auth/OtpPage.vue" // OTP DISABLED
 import Sidebar from "@/pages/dashboard/Sidebar.vue"
 import TranscriptList from "@/pages/zoom_resume/TranscriptList.vue"
 import NotFound from "@/pages/error/NotFound.vue"
@@ -32,7 +32,8 @@ const routes: RouteRecordRaw[] = [
       { path: "", redirect: "/auth/login" },
       { path: "login", name: "login", component: LoginPage },
       { path: "signup", name: "signup", component: SignupPage },
-      { path: "verify-otp", name: "verify-otp", component: OTPPage },
+      // OTP DISABLED - Route removed
+      // { path: "verify-otp", name: "verify-otp", component: OTPPage },
     ]
   },
   // { path: "/testpage", name: "testpage", component: testpage },

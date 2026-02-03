@@ -1,7 +1,7 @@
 import { ref } from 'vue';
 import { useRouter } from 'vue-router';
 import { useAuthStore } from '@/features/auth/store';
-import type { LoginRequest, SignupRequest, OTPVerifyRequest } from '@/features/auth/types';
+import type { LoginRequest, SignupRequest } from '@/features/auth/types';
 
 /**
  * Composable for login functionality
@@ -64,15 +64,20 @@ export function useSignup() {
         error.value = null;
 
         try {
-            const message = await authStore.signup(formData.value);
-            successMessage.value = message;
-
+            // OTP DISABLED - Auto-login after signup
+            await authStore.signup(formData.value);
+            
+            // Auto-login with same credentials
+            await authStore.login({
+                email: formData.value.email,
+                password: formData.value.password
+            });
+            
+            successMessage.value = 'Registration successful! Redirecting...';
+            
             setTimeout(() => {
-                router.push({
-                    path: '/auth/verify-otp',
-                    query: { email: formData.value.email }
-                });
-            }, 2000);
+                router.push('/dashboard');
+            }, 1500);
         } catch (err: any) {
             error.value = err.message || 'Signup failed';
         } finally {
@@ -89,10 +94,8 @@ export function useSignup() {
     };
 }
 
-/**
- * Composable for OTP verification
- * Use this in your existing OTP component
- */
+// OTP DISABLED - useOTPVerification removed
+/*
 export function useOTPVerification() {
     const router = useRouter();
     const authStore = useAuthStore();
@@ -135,3 +138,4 @@ export function useOTPVerification() {
         handleVerifyOTP
     };
 }
+*/

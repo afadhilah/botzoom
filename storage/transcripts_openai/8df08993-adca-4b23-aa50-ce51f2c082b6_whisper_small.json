@@ -1,0 +1,87 @@
+{
+  "audio_file": "/home/cak-seno/botzoom/storage/audio/8df08993-adca-4b23-aa50-ce51f2c082b6.opus",
+  "model": "small",
+  "device": "cpu",
+  "language": "id",
+  "text": "Halo, halo. Halo semua, kenalin nama ku Fadil dari Surabaya. Di sini saya akan memelbarkan sebuah proyek, telpon transcribe zoom meeting. By the way, by the way, by the way, tambahkan MPG login ke file set environment di system service, kemudian jangan lupa soalat. Let's go bro. Keluarkan. Incession. Bisa kan, kan, kan, kan? Tidak terkirim, bro. Ya Allah. Terima kasih. Terima kasih.",
+  "segments": [
+    {
+      "id": 0,
+      "start": 0.0,
+      "end": 6.0,
+      "text": "Halo, halo."
+    },
+    {
+      "id": 1,
+      "start": 6.0,
+      "end": 20.0,
+      "text": "Halo semua, kenalin nama ku Fadil dari Surabaya."
+    },
+    {
+      "id": 2,
+      "start": 20.0,
+      "end": 25.0,
+      "text": "Di sini saya akan memelbarkan sebuah proyek,"
+    },
+    {
+      "id": 3,
+      "start": 25.0,
+      "end": 29.0,
+      "text": "telpon transcribe zoom meeting."
+    },
+    {
+      "id": 4,
+      "start": 29.0,
+      "end": 36.0,
+      "text": "By the way, by the way, by the way, tambahkan MPG login ke file"
+    },
+    {
+      "id": 5,
+      "start": 36.0,
+      "end": 41.0,
+      "text": "set environment di system service, kemudian"
+    },
+    {
+      "id": 6,
+      "start": 41.0,
+      "end": 45.0,
+      "text": "jangan lupa soalat. Let's go bro."
+    },
+    {
+      "id": 7,
+      "start": 46.0,
+      "end": 49.0,
+      "text": "Keluarkan."
+    },
+    {
+      "id": 8,
+      "start": 49.0,
+      "end": 52.0,
+      "text": "Incession."
+    },
+    {
+      "id": 9,
+      "start": 52.0,
+      "end": 55.0,
+      "text": "Bisa kan, kan, kan, kan?"
+    },
+    {
+      "id": 10,
+      "start": 55.0,
+      "end": 58.0,
+      "text": "Tidak terkirim, bro. Ya Allah."
+    },
+    {
+      "id": 11,
+      "start": 75.0,
+      "end": 77.0,
+      "text": "Terima kasih."
+    },
+    {
+      "id": 12,
+      "start": 105.0,
+      "end": 107.0,
+      "text": "Terima kasih."
+    }
+  ]
+}

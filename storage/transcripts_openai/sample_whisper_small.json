@@ -1,5 +1,5 @@
 {
-  "audio_file": "D:\\Project\\PLN\\Test\\Meeting-Transcript\\storage\\audio\\sample.wav",
+  "audio_file": "/home/cak-seno/botzoom/storage/audio/sample.wav",
   "model": "small",
   "device": "cpu",
   "language": "en",
