@@ -462,8 +462,57 @@ class JoinZoomMeet:
         return count
 
 
+    def setup_pulseaudio(self):
+        """Ensure PulseAudio is running and virtual-sink exists."""
+        try:
+            # Check if PulseAudio daemon is running using pacmd
+            logging.info("Checking PulseAudio status...")
+            result = subprocess.run(['pacmd', 'list-sinks'], capture_output=True, text=True, timeout=5)
+            
+            if result.returncode != 0:
+                logging.info("PulseAudio not responding, starting daemon...")
+                subprocess.run(['pulseaudio', '--start', '-D'], check=False)
+                time.sleep(3)  # Wait for PulseAudio to initialize
+                logging.info("PulseAudio daemon started")
+            else:
+                logging.info("PulseAudio is running")
+            
+            # Check if virtual-sink exists using pacmd
+            check_result = subprocess.run(['pacmd', 'list-sinks'], capture_output=True, text=True, timeout=5)
+            
+            if 'virtual-sink' not in check_result.stdout:
+                logging.info("Creating virtual-sink for audio capture...")
+                subprocess.run([
+                    'pacmd', 'load-module', 'module-null-sink',
+                    'sink_name=virtual-sink',
+                    'sink_properties=device.description=VirtualSink'
+                ], check=False, timeout=10)
+                time.sleep(1)
+                logging.info("Virtual-sink creation attempted")
+            else:
+                logging.info("Virtual-sink already exists")
+                
+            # Set as default sink using pacmd
+            subprocess.run(['pacmd', 'set-default-sink', 'virtual-sink'], check=False, timeout=5)
+            logging.info("Virtual-sink set as default")
+            
+            return True
+        except subprocess.TimeoutExpired:
+            logging.error("PulseAudio commands timed out")
+            return False
+        except Exception as e:
+            logging.error(f"Failed to setup PulseAudio: {e}")
+            return False
+
     def start_recording(self):
         logging.info("Starting meeting audio recording with FFmpeg...")
+        
+        # Setup PulseAudio first (Linux only)
+        if platform.system() == 'Linux':
+            if not self.setup_pulseaudio():
+                logging.error("PulseAudio setup failed, cannot start recording")
+                return
+        
         output_audio_file = f'{self.output_file}.opus'
         
         if platform.system() == 'Darwin':
@@ -482,12 +531,10 @@ class JoinZoomMeet:
                 "ffmpeg",
                 "-f", "pulse",
                 "-i", "virtual-sink.monitor",
-                "-af", "aresample=async=1000",  # Help with audio synchronization
                 "-acodec", "libopus",
-                "-application", "audio",  # Optimize for audio quality
-                "-b:a", "256k",  # Higher bitrate for better quality
-                "-vbr", "on",  # Variable bitrate for better quality/size balance
-                "-frame_duration", "60",  # Longer frames for more stable encoding
+                "-application", "audio",
+                "-b:a", "256k",
+                "-vbr", "on",
                 "-ac", "1",
                 "-ar", "48000",
                 output_audio_file
@@ -502,9 +549,8 @@ class JoinZoomMeet:
             ffmpeg_log = open(f'{self.output_file}_ffmpeg.log', 'w')
             
             # Set PulseAudio environment for FFmpeg
+            # Don't set PULSE_SERVER explicitly - let PulseAudio auto-detect
             pulse_env = os.environ.copy()
-            pulse_server = os.environ.get('PULSE_SERVER', f'/run/user/{os.getuid()}/pulse/native')
-            pulse_env['PULSE_SERVER'] = pulse_server
             
             self.event_start_time = datetime.now(timezone.utc)
             self.recording_process = subprocess.Popen(
@@ -517,7 +563,6 @@ class JoinZoomMeet:
             self.recording_start_time = time.perf_counter()
             logging.info(f"Recording started. Output will be saved to {output_audio_file}")
             logging.info(f"FFmpeg logs will be saved to {self.output_file}_ffmpeg.log")
-            logging.info(f"Using PULSE_SERVER: {pulse_server}")
         except subprocess.CalledProcessError as e:
             logging.error(f"Error starting FFmpeg: {e}")
             logging.error(f"FFmpeg output: {e.output}")

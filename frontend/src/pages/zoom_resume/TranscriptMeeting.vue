@@ -66,6 +66,11 @@ async function joinZoomMeeting() {
     const response = await transcriptApi.joinZoomMeeting(zoomMeetingLink.value)
     activeBotId.value = response.bot_id
     
+    // Persist bot session to localStorage
+    localStorage.setItem('zoom_bot_id', response.bot_id)
+    localStorage.setItem('zoom_meeting_link', zoomMeetingLink.value)
+    localStorage.setItem('zoom_bot_started_at', new Date().toISOString())
+    
     toast.success('Bot joining meeting', {
       description: 'Zoom bot is joining the meeting and will start recording.',
     })
@@ -108,6 +113,11 @@ async function endZoomBot() {
     toast.success('Bot session ended', {
       description: 'Processing transcript from Zoom recording...',
     })
+    
+    // Clear bot session from localStorage
+    localStorage.removeItem('zoom_bot_id')
+    localStorage.removeItem('zoom_meeting_link')
+    localStorage.removeItem('zoom_bot_started_at')
     
     activeBotId.value = null
     
@@ -192,6 +202,40 @@ async function endZoomBot() {
 }
 
 onMounted(() => {
+  // Restore bot session from localStorage
+  const savedBotId = localStorage.getItem('zoom_bot_id')
+  const savedMeetingLink = localStorage.getItem('zoom_meeting_link')
+  const savedStartedAt = localStorage.getItem('zoom_bot_started_at')
+  
+  if (savedBotId && savedStartedAt) {
+    // Check if session is not too old (e.g., within 24 hours)
+    const startedAt = new Date(savedStartedAt)
+    const now = new Date()
+    const hoursSinceStart = (now.getTime() - startedAt.getTime()) / (1000 * 60 * 60)
+    
+    if (hoursSinceStart < 24) {
+      // Restore active bot session
+      activeBotId.value = savedBotId
+      zoomMeetingLink.value = savedMeetingLink || ''
+      
+      console.log('[RESTORE] Bot session restored:', {
+        botId: savedBotId,
+        startedAt: savedStartedAt,
+        hoursAgo: hoursSinceStart.toFixed(1)
+      })
+      
+      toast.info('Bot session restored', {
+        description: `Active session from ${hoursSinceStart.toFixed(0)} hours ago`,
+      })
+    } else {
+      // Session too old, clear it
+      localStorage.removeItem('zoom_bot_id')
+      localStorage.removeItem('zoom_meeting_link')
+      localStorage.removeItem('zoom_bot_started_at')
+      console.log('[RESTORE] Bot session expired, cleared')
+    }
+  }
+  
   loadLatestZoomTranscript()
 })
 

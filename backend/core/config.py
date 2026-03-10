@@ -27,8 +27,8 @@ class Settings(BaseSettings):
     # ============================================================
     JWT_SECRET_KEY: str
     JWT_ALGORITHM: str = "HS256"
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
-    REFRESH_TOKEN_EXPIRE_DAYS: int = 7
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 1440  # 24 hours
+    REFRESH_TOKEN_EXPIRE_DAYS: int = 30  # 30 days
     
     # ============================================================
     # Security Configuration
@@ -40,7 +40,8 @@ class Settings(BaseSettings):
     # ============================================================
     # CORS Configuration
     # ============================================================
-    CORS_ORIGINS: List[str] = ["http://localhost:5173", "http://127.0.0.1:5173"]
+    # CORS_ORIGINS: List[str] = ["http://localhost:5173", "http://127.0.0.1:5173"]
+    CORS_ORIGINS: List[str] = ["*"]  # Allow all origins (for development & external access)
     ALLOWED_HOSTS: str = '["*"]'
     
     @property

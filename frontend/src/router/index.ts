@@ -49,6 +49,11 @@ export const router = createRouter({
 
 // Navigation guards
 router.beforeEach(async (to, from, next) => {
+  // AUTH DISABLED - Allow all routes without authentication
+  console.log('[ROUTER] Auth disabled - allowing access to:', to.path)
+  next()
+  
+  /* ORIGINAL AUTH CODE - DISABLED
   const authStore = useAuthStore()
 
   // Initialize auth on first navigation
@@ -66,4 +71,5 @@ router.beforeEach(async (to, from, next) => {
   } else {
     next()
   }
+  */
 })

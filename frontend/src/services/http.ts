@@ -1,4 +1,5 @@
 import API_CONFIG from './config';
+import { TokenService } from './token.service';
 
 interface RequestConfig extends RequestInit {
     params?: Record<string, string | number | boolean>;
@@ -13,12 +14,65 @@ interface ApiResponse<T = any> {
 class HttpClient {
     private baseURL: string;
     private defaultHeaders: HeadersInit;
+    private isRefreshing = false;
+    private refreshPromise: Promise<void> | null = null;
 
     constructor(baseURL: string = API_CONFIG.baseURL) {
         this.baseURL = baseURL;
         this.defaultHeaders = {
             'Content-Type': 'application/json',
         };
+    }
+
+    private async refreshTokenIfNeeded(): Promise<void> {
+        // If already refreshing, wait for it
+        if (this.isRefreshing && this.refreshPromise) {
+            await this.refreshPromise;
+            return;
+        }
+
+        // Check if token is expiring soon
+        if (TokenService.isTokenExpiringSoon()) {
+            this.isRefreshing = true;
+            this.refreshPromise = this.performTokenRefresh();
+            
+            try {
+                await this.refreshPromise;
+            } finally {
+                this.isRefreshing = false;
+                this.refreshPromise = null;
+            }
+        }
+    }
+
+    private async performTokenRefresh(): Promise<void> {
+        const refreshToken = TokenService.getRefreshToken();
+        if (!refreshToken) {
+            console.warn('[HTTP] No refresh token available');
+            return;
+        }
+
+        try {
+            const response = await fetch(`${this.baseURL}/auth/refresh`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ refresh_token: refreshToken })
+            });
+
+            if (response.ok) {
+                const data = await response.json();
+                TokenService.setTokens(data.access_token, data.refresh_token);
+                console.log('[HTTP] Token refreshed successfully');
+            } else {
+                console.error('[HTTP] Token refresh failed, clearing tokens');
+                TokenService.clearTokens();
+                // Redirect to login or show notification
+                window.location.href = '/login';
+            }
+        } catch (error) {
+            console.error('[HTTP] Token refresh error:', error);
+            TokenService.clearTokens();
+        }
     }
 
     private buildURL(endpoint: string, params?: Record<string, string | number | boolean>): string {
@@ -74,6 +128,7 @@ class HttpClient {
     }
 
     async get<T = any>(endpoint: string, config?: RequestConfig): Promise<T> {
+        await this.refreshTokenIfNeeded();
         const url = this.buildURL(endpoint, config?.params);
 
         const response = await fetch(url, {
@@ -86,6 +141,7 @@ class HttpClient {
     }
 
     async post<T = any>(endpoint: string, data?: any, config?: RequestConfig): Promise<T> {
+        await this.refreshTokenIfNeeded();
         const url = this.buildURL(endpoint, config?.params);
 
         const response = await fetch(url, {
@@ -99,6 +155,7 @@ class HttpClient {
     }
 
     async put<T = any>(endpoint: string, data?: any, config?: RequestConfig): Promise<T> {
+        await this.refreshTokenIfNeeded();
         const url = this.buildURL(endpoint, config?.params);
 
         const response = await fetch(url, {
@@ -112,6 +169,7 @@ class HttpClient {
     }
 
     async delete<T = any>(endpoint: string, config?: RequestConfig): Promise<T> {
+        await this.refreshTokenIfNeeded();
         const url = this.buildURL(endpoint, config?.params);
 
         const response = await fetch(url, {

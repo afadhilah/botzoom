@@ -21,6 +21,7 @@ export interface Transcript {
     language: string | null
     full_text: string | null
     segments_json: TranscriptSegment[] | null
+    segments: TranscriptSegment[] | null  // Alias for segments_json
     error_message: string | null
     created_at: string
     updated_at: string

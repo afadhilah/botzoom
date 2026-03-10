@@ -1,0 +1,15 @@
+[Unit]
+Description=Cloudflare Tunnel for BotZoom API
+After=network.target botzoom-backend.service
+
+[Service]
+Type=simple
+User=cak-seno
+ExecStart=/usr/bin/cloudflared tunnel --url http://localhost:8000
+Restart=always
+RestartSec=10
+StandardOutput=append:/var/log/cloudflared.log
+StandardError=append:/var/log/cloudflared.log
+
+[Install]
+WantedBy=multi-user.target

@@ -75,13 +75,27 @@ def start_zoom_bot_background(
             "--output-dir", "storage/zoom_recordings"
         ]
         
-        # Run bot as detached subprocess
+        # Prepare environment for subprocess
+        import os
+        bot_env = os.environ.copy()
+        
+        # Ensure XDG_RUNTIME_DIR is set but DON'T set PULSE_SERVER
+        # (let PulseAudio auto-detect to avoid socket path issues)
+        uid = os.getuid()
+        if 'XDG_RUNTIME_DIR' not in bot_env:
+            bot_env['XDG_RUNTIME_DIR'] = f'/run/user/{uid}'
+        
+        # Remove PULSE_SERVER if exists (causes connection refused)
+        bot_env.pop('PULSE_SERVER', None)
+        
+        # Run bot as detached subprocess with proper environment
         process = subprocess.Popen(
             cmd,
             cwd=str(backend_dir),
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            start_new_session=True  # Detach from parent
+            start_new_session=True,  # Detach from parent
+            env=bot_env  # Pass environment with PulseAudio config
         )
         
         logger.info(f"Started Zoom bot process {process.pid} (UUID: {bot_uuid}) for meeting: {meeting_link}")

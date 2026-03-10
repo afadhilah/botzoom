@@ -32,4 +32,39 @@ export class TokenService {
             return false;
         }
     }
+
+    static isTokenExpiringSoon(): boolean {
+        const token = this.getAccessToken();
+        if (!token) return false;
+
+        try {
+            const parts = token.split('.');
+            if (parts.length !== 3) return false;
+            
+            const payload = JSON.parse(atob(parts[1]));
+            const exp = payload.exp * 1000; // Convert to milliseconds
+            const now = Date.now();
+            const timeUntilExpiry = exp - now;
+            
+            // Token expires in less than 5 minutes
+            return timeUntilExpiry < 5 * 60 * 1000 && timeUntilExpiry > 0;
+        } catch {
+            return false;
+        }
+    }
+
+    static getTokenExpiryTime(): number | null {
+        const token = this.getAccessToken();
+        if (!token) return null;
+
+        try {
+            const parts = token.split('.');
+            if (parts.length !== 3) return null;
+            
+            const payload = JSON.parse(atob(parts[1]));
+            return payload.exp * 1000; // Convert to milliseconds
+        } catch {
+            return null;
+        }
+    }
 }

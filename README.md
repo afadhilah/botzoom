@@ -133,3 +133,12 @@ Developed by ICON Plus Team
   cd /home/cak-seno/botzoom/frontend && cat .env.production && echo -e "\n--- Building with production config ---" && npx vite build --mode production
 sudo systemctl restart botzoom-backend
 npx vite build && sudo systemctl restart nginx
+sudo tail -f /var/log/botzoom/backend.log
+sudo tail -f /var/log/botzoom/zoom-bot.log
+
+sudo apt update && sudo apt install pulseaudio -y
+pulseaudio -k 2>/dev/null
+pulseaudio --start --disallow-exit
+pacmd load-module module-null-sink sink_name=virtual-sink sink_properties=device.description="Virtual_Sink"
+pacmd set-default-sink virtual-sink
+pacmd list-sinks
