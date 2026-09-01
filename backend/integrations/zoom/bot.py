@@ -3,6 +3,7 @@ import sys
 import time
 import json
 import uuid
+import re
 import logging
 import requests 
 import platform
@@ -38,6 +39,7 @@ class JoinZoomMeet:
         self.recording_start_time = None
         self.stop_event = Event()
         self.recording_process = None
+        self.ffmpeg_log_handle = None
         self.presigned_url_combined = presigned_url_combined
         self.presigned_url_audio = presigned_url_audio
         self.id = bot_id or str(uuid.uuid4())  # Use provided bot_id or generate new UUID
@@ -56,11 +58,16 @@ class JoinZoomMeet:
         self.session_ended = False
         self.project_settings = project_settings
         self.custom_logger = custom_logger or logger
+        self.pulse_sink_name = "virtual-sink"
+        self.pulse_monitor_source = "virtual-sink.monitor"
         # self.highlight = init_highlight(self.project_settings.HIGHLIGHT_PROJECT_ID, self.project_settings.ENVIRONMENT_NAME, "zoom-bot") if project_settings else None
         
         logger.info(f"Zoom bot initialized: ID={self.id}, Meeting={self.meeting_id}")
 
     def setup_browser(self):
+        if platform.system() == 'Linux':
+            self.setup_pulseaudio()
+
         options = Options()
         options.add_argument('--headless')
         options.add_argument('--start-maximized')
@@ -101,7 +108,7 @@ class JoinZoomMeet:
 
         try:
             # Set default PulseAudio sink to virtual-sink for Chrome
-            os.environ['PULSE_SINK'] = 'virtual-sink'
+            os.environ['PULSE_SINK'] = self.pulse_sink_name
             
             self.browser = webdriver.Chrome(
                 service=browser_service,
@@ -414,6 +421,9 @@ class JoinZoomMeet:
                 logging.info("Admitted to the meeting. Starting recording...")
                 # Re-attempt audio connection if it failed previously or to ensure it's connected
                 self.connect_audio()
+
+                # Route current browser audio stream to recording sink.
+                self.route_audio_to_sink()
                 
                 # Ensure audio is muted before recording
                 self.ensure_muted()
@@ -477,10 +487,11 @@ class JoinZoomMeet:
             else:
                 logging.info("PulseAudio is running")
             
-            # Check if virtual-sink exists using pacmd
+            # Check if virtual-sink exists using exact sink name
             check_result = subprocess.run(['pacmd', 'list-sinks'], capture_output=True, text=True, timeout=5)
-            
-            if 'virtual-sink' not in check_result.stdout:
+            sink_text = check_result.stdout or ''
+
+            if not re.search(r'name:\s*<virtual-sink>', sink_text):
                 logging.info("Creating virtual-sink for audio capture...")
                 subprocess.run([
                     'pacmd', 'load-module', 'module-null-sink',
@@ -491,10 +502,25 @@ class JoinZoomMeet:
                 logging.info("Virtual-sink creation attempted")
             else:
                 logging.info("Virtual-sink already exists")
-                
-            # Set as default sink using pacmd
-            subprocess.run(['pacmd', 'set-default-sink', 'virtual-sink'], check=False, timeout=5)
-            logging.info("Virtual-sink set as default")
+
+            # Detect monitor source, prefer exact virtual-sink.monitor
+            source_result = subprocess.run(['pacmd', 'list-sources'], capture_output=True, text=True, timeout=5)
+            source_text = source_result.stdout or ''
+            exact_monitor = re.search(r'name:\s*<virtual-sink\.monitor>', source_text)
+            fallback_monitor = re.search(r'name:\s*<(virtual-sink(?:\.\d+)?\.monitor)>', source_text)
+
+            if exact_monitor:
+                self.pulse_monitor_source = 'virtual-sink.monitor'
+            elif fallback_monitor:
+                self.pulse_monitor_source = fallback_monitor.group(1)
+
+            if self.pulse_monitor_source.endswith('.monitor'):
+                self.pulse_sink_name = self.pulse_monitor_source[:-8]
+
+            # Set as default sink using selected sink name
+            subprocess.run(['pacmd', 'set-default-sink', self.pulse_sink_name], check=False, timeout=5)
+            logging.info(f"Pulse sink selected: {self.pulse_sink_name}")
+            logging.info(f"Pulse monitor selected: {self.pulse_monitor_source}")
             
             return True
         except subprocess.TimeoutExpired:
@@ -503,6 +529,42 @@ class JoinZoomMeet:
         except Exception as e:
             logging.error(f"Failed to setup PulseAudio: {e}")
             return False
+
+    def route_audio_to_sink(self):
+        """Move active PulseAudio sink inputs to the selected recording sink."""
+        if platform.system() != 'Linux':
+            return
+
+        try:
+            result = subprocess.run(
+                ['pactl', 'list', 'sink-inputs', 'short'],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+
+            if result.returncode != 0 or not result.stdout.strip():
+                logging.info("No active sink inputs to route.")
+                return
+
+            moved = 0
+            for line in result.stdout.strip().splitlines():
+                parts = line.split()
+                if not parts:
+                    continue
+                input_id = parts[0]
+                move_result = subprocess.run(
+                    ['pactl', 'move-sink-input', input_id, self.pulse_sink_name],
+                    capture_output=True,
+                    text=True,
+                    timeout=5
+                )
+                if move_result.returncode == 0:
+                    moved += 1
+
+            logging.info(f"Routed {moved} sink input(s) to {self.pulse_sink_name}")
+        except Exception as e:
+            logging.warning(f"Failed to route sink inputs: {e}")
 
     def start_recording(self):
         logging.info("Starting meeting audio recording with FFmpeg...")
@@ -530,7 +592,7 @@ class JoinZoomMeet:
             command = [
                 "ffmpeg",
                 "-f", "pulse",
-                "-i", "virtual-sink.monitor",
+                "-i", self.pulse_monitor_source,
                 "-acodec", "libopus",
                 "-application", "audio",
                 "-b:a", "256k",
@@ -544,9 +606,12 @@ class JoinZoomMeet:
             self.end_session()
         try:
             logging.info(f"Executing FFmpeg command: {' '.join(command)}")
+
+            if platform.system() == 'Linux':
+                self.route_audio_to_sink()
             
             # Open stderr log file for FFmpeg debugging
-            ffmpeg_log = open(f'{self.output_file}_ffmpeg.log', 'w')
+            self.ffmpeg_log_handle = open(f'{self.output_file}_ffmpeg.log', 'w')
             
             # Set PulseAudio environment for FFmpeg
             # Don't set PULSE_SERVER explicitly - let PulseAudio auto-detect
@@ -555,8 +620,9 @@ class JoinZoomMeet:
             self.event_start_time = datetime.now(timezone.utc)
             self.recording_process = subprocess.Popen(
                 command, 
-                stdout=ffmpeg_log, 
+                stdout=self.ffmpeg_log_handle,
                 stderr=subprocess.STDOUT,
+                stdin=subprocess.PIPE,
                 env=pulse_env
             )
             self.recording_started = True
@@ -574,19 +640,43 @@ class JoinZoomMeet:
         """Stop FFmpeg recording gracefully with proper file finalization."""
         if self.recording_started and self.recording_process:
             logging.info("Stopping audio recording gracefully...")
-            
-            # Send SIGTERM to allow FFmpeg to finalize the file
-            self.recording_process.terminate()
-            
+
             try:
-                # Wait for FFmpeg to finish writing and close the file properly
+                # Preferred graceful stop: ask FFmpeg to quit itself and finalize output.
+                if self.recording_process.stdin:
+                    self.recording_process.stdin.write(b"q\n")
+                    self.recording_process.stdin.flush()
+
                 self.recording_process.wait(timeout=timeout)
                 logging.info("Recording stopped gracefully. FFmpeg finalized the output file.")
             except subprocess.TimeoutExpired:
                 logging.warning(f"Recording process did not terminate within {timeout}s. Force killing...")
-                self.recording_process.kill()
-                self.recording_process.wait()  # Wait for kill to complete
-                logging.warning("Recording process force killed. Audio file may be corrupted.")
+                self.recording_process.terminate()
+                try:
+                    self.recording_process.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    self.recording_process.kill()
+                    self.recording_process.wait()  # Wait for kill to complete
+                    logging.warning("Recording process force killed. Audio file may be corrupted.")
+            except Exception as e:
+                logging.warning(f"Graceful FFmpeg stop failed: {e}. Falling back to terminate().")
+                self.recording_process.terminate()
+                try:
+                    self.recording_process.wait(timeout=timeout)
+                except subprocess.TimeoutExpired:
+                    self.recording_process.kill()
+                    self.recording_process.wait()
+                    logging.warning("Recording process force killed. Audio file may be corrupted.")
+
+            try:
+                if self.ffmpeg_log_handle and not self.ffmpeg_log_handle.closed:
+                    self.ffmpeg_log_handle.flush()
+                    self.ffmpeg_log_handle.close()
+            except Exception as e:
+                logging.warning(f"Failed to close FFmpeg log handle cleanly: {e}")
+
+            self.ffmpeg_log_handle = None
+            self.recording_process = None
             
             # Mark recording as stopped
             self.recording_started = False
@@ -673,15 +763,19 @@ class JoinZoomMeet:
         self.session_ended = True
         logging.info("Ending the session...")
         try:
-            time.sleep(10)
-            if self.browser and self.recording_started:
+            # Always stop recording first to ensure FFmpeg finalizes file cleanly.
+            if self.recording_started:
+                self.stop_recording(timeout=15)
+
+            time.sleep(2)
+            if self.browser:
                 logging.info("Initiating transcript save...")
                 try:
                     self.save_transcript()
                     logging.info("Transcript is saved.")
                 except Exception as e:
                     logging.error(f"Failed to save transcript: {e}")
-            time.sleep(20)
+            time.sleep(2)
             if self.browser:
                 try:
                     self.browser.quit()
@@ -699,10 +793,6 @@ class JoinZoomMeet:
                 logging.warning(f"Failed to cleanup cache directory {self.cache_dir}: {e}")
             
             self.stop_event.set()
-            
-            # Only stop recording if it hasn't been stopped yet
-            if self.recording_started:
-                self.stop_recording(timeout=10)
                 
             # Upload files if recording was done
             if os.path.exists(f"{self.output_file}.opus"):
@@ -957,6 +1047,14 @@ class JoinZoomMeet:
         except Exception as e:
             logging.error("An error occurred during the meeting session. %s", str(e), exc_info=True)
         finally:
+            # Safety net: ensure recording is finalized even on unexpected exits.
+            if self.recording_started:
+                try:
+                    logging.info("[FINALIZER] Recording still active. Forcing graceful stop...")
+                    self.stop_recording(timeout=15)
+                except Exception as stop_err:
+                    logging.warning(f"[FINALIZER] Failed to stop recording cleanly: {stop_err}")
+
             logging.info("Finalizing the meeting session.")
             self.end_session()
         logging.info("Meeting bot has successfully completed its run.")

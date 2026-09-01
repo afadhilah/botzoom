@@ -91,6 +91,21 @@ export const transcriptApi = {
     },
 
     /**
+     * Get live bot status from backend.
+     */
+    async getZoomBotStatus(botId: string): Promise<{
+        bot_id: string
+        status: 'running' | 'stopping' | 'terminated'
+        running: boolean
+        pid: number | null
+        audio_exists: boolean
+        audio_size: number
+        stop_flag: boolean
+    }> {
+        return await http.get(`/zoom/status/${botId}`)
+    },
+
+    /**
      * Fetch single transcript by ID.
      */
     async fetchTranscriptById(id: number): Promise<Transcript> {

@@ -3,6 +3,7 @@ Background worker for async transcript processing.
 Pure domain logic - NO FastAPI imports.
 """
 import sys
+import shutil
 from pathlib import Path
 from typing import Any, Dict
 
@@ -14,6 +15,23 @@ from database.base import SessionLocal
 from domains.zoom_resume.transcript.service import TranscriptService
 from domains.zoom_resume.transcript.model import TranscriptStatus
 from domains.zoom_resume.transcript.whisper import transcribe_audio_file
+
+
+def cleanup_cuemeet_cache(audio_path: Path) -> None:
+    """Delete CueMeet<bot_id> browser cache folder after successful transcription."""
+    try:
+        # Audio file format is usually out/<bot_id>.opus
+        bot_id = audio_path.stem
+        cache_dir = backend_dir / f"CueMeet{bot_id}"
+
+        if cache_dir.exists() and cache_dir.is_dir():
+            shutil.rmtree(cache_dir)
+            print(f"[WORKER] Deleted cache directory: {cache_dir}")
+        else:
+            print(f"[WORKER] Cache directory not found (skip): {cache_dir}")
+    except Exception as e:
+        # Cleanup failure should not fail the transcript pipeline
+        print(f"[WORKER] Failed to delete cache directory for {audio_path}: {e}")
 
 
 def process_transcript(transcript_id: int) -> Dict[str, Any]:
@@ -60,6 +78,9 @@ def process_transcript(transcript_id: int) -> Dict[str, Any]:
             full_text=result["text"],
             segments=result["segments"]
         )
+
+        # Cleanup browser cache folder after transcript is successfully persisted
+        cleanup_cuemeet_cache(audio_path)
         
         print(f"[WORKER] Transcript {transcript_id} completed successfully")
         

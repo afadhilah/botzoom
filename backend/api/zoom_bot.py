@@ -157,6 +157,58 @@ class EndBotRequest(BaseModel):
     bot_id: str
 
 
+@router.get("/status/{bot_id}")
+async def get_zoom_bot_status(
+    bot_id: str,
+    current_user: User = Depends(get_current_active_user)
+):
+    """Get live status for a bot session so UI can stay in sync across pages."""
+    import os
+    from pathlib import Path
+
+    backend_dir = Path(__file__).parent.parent
+    pid_file = backend_dir / "out" / f"{bot_id}.pid"
+    stop_flag_file = backend_dir / "out" / f"{bot_id}.stop"
+    audio_file = backend_dir / "out" / f"{bot_id}.opus"
+
+    pid = None
+    running = False
+
+    if pid_file.exists():
+        try:
+            pid = int(pid_file.read_text().strip())
+            try:
+                import psutil
+                proc = psutil.Process(pid)
+                running = proc.is_running() and proc.status() != psutil.STATUS_ZOMBIE
+            except ImportError:
+                # Fallback without psutil
+                try:
+                    os.kill(pid, 0)
+                    running = True
+                except OSError:
+                    running = False
+            except Exception:
+                running = False
+        except Exception:
+            running = False
+
+    if running:
+        status = "stopping" if stop_flag_file.exists() else "running"
+    else:
+        status = "terminated"
+
+    return {
+        "bot_id": bot_id,
+        "status": status,
+        "running": running,
+        "pid": pid,
+        "audio_exists": audio_file.exists(),
+        "audio_size": audio_file.stat().st_size if audio_file.exists() else 0,
+        "stop_flag": stop_flag_file.exists()
+    }
+
+
 @router.post("/end")
 async def end_zoom_bot(
     request: EndBotRequest,
@@ -179,10 +231,15 @@ async def end_zoom_bot(
         pid_file = backend_dir / "out" / f"{request.bot_id}.pid"
         
         if not pid_file.exists():
-            raise HTTPException(
-                status_code=404, 
-                detail=f"Bot {request.bot_id} not found or already terminated"
-            )
+            # Idempotent behavior: repeated end requests should not raise 404.
+            audio_file = backend_dir / "out" / f"{request.bot_id}.opus"
+            logger.info(f"Bot {request.bot_id} already terminated (pid file missing)")
+            return {
+                "message": "Bot already terminated",
+                "bot_id": request.bot_id,
+                "already_terminated": True,
+                "audio_exists": audio_file.exists()
+            }
         
         # Read PID first
         pid = int(pid_file.read_text().strip())
@@ -196,9 +253,9 @@ async def end_zoom_bot(
         except Exception as e:
             logger.warning(f"Failed to create stop signal file: {e}")
         
-        # Step 2: Wait for graceful shutdown (max 5 seconds)
+        # Step 2: Wait for graceful shutdown (allow enough time for FFmpeg finalization + cleanup)
         import time
-        max_wait = 5
+        max_wait = 35
         wait_interval = 0.5
         elapsed = 0
         
@@ -220,28 +277,58 @@ async def end_zoom_bot(
                 time.sleep(wait_interval)
                 elapsed += wait_interval
             
-            # Step 3: Force kill if still alive
+            # Step 3: Staged termination only if still alive after grace period
             if process_alive:
-                logger.warning(f"Process {pid} didn't exit gracefully, force killing...")
-                print(f"[ZOOM_BOT_API] Timeout, force killing process {pid}...", flush=True)
+                logger.warning(f"Process {pid} didn't exit gracefully after {max_wait}s, sending SIGTERM first...")
+                print(f"[ZOOM_BOT_API] Graceful timeout ({max_wait}s), sending SIGTERM to process tree {pid}...", flush=True)
                 
                 parent = psutil.Process(pid)
                 children = parent.children(recursive=True)
                 
-                # Kill all children
+                # Terminate children first
                 for child in children:
                     try:
-                        child.kill()
-                        logger.info(f"Killed child process {child.pid}")
+                        child.terminate()
+                        logger.info(f"Sent SIGTERM to child process {child.pid}")
                     except psutil.NoSuchProcess:
                         pass
                 
-                # Kill parent
-                parent.kill()
-                logger.info(f"Killed parent process {pid}")
+                # Terminate parent
+                try:
+                    parent.terminate()
+                    logger.info(f"Sent SIGTERM to parent process {pid}")
+                except psutil.NoSuchProcess:
+                    process_alive = False
+
+                # Give short extra grace for FFmpeg finalization
+                force_deadline = time.time() + 10
+                while time.time() < force_deadline:
+                    try:
+                        if not psutil.Process(pid).is_running():
+                            process_alive = False
+                            break
+                    except psutil.NoSuchProcess:
+                        process_alive = False
+                        break
+                    time.sleep(0.5)
+
+                # Hard kill only as last resort
+                if process_alive:
+                    logger.warning(f"Process {pid} still alive after SIGTERM grace. Sending SIGKILL...")
+                    for child in children:
+                        try:
+                            child.kill()
+                            logger.info(f"Killed child process {child.pid}")
+                        except psutil.NoSuchProcess:
+                            pass
+                    try:
+                        parent.kill()
+                        logger.info(f"Killed parent process {pid}")
+                    except psutil.NoSuchProcess:
+                        pass
                 
         except ImportError:
-            # Fallback without psutil - just wait and kill
+            # Fallback without psutil - wait grace period then kill
             logger.warning("psutil not available, using basic kill after timeout")
             time.sleep(max_wait)
             import signal
@@ -252,6 +339,15 @@ async def end_zoom_bot(
         except ProcessLookupError:
             logger.info(f"Process {pid} already terminated")
         
+        # Wait briefly for output file materialization/finalization.
+        audio_file = backend_dir / "out" / f"{request.bot_id}.opus"
+        import time
+        materialize_deadline = time.time() + 5
+        while time.time() < materialize_deadline:
+            if audio_file.exists() and audio_file.stat().st_size > 0:
+                break
+            time.sleep(0.5)
+
         # Clean up files
         pid_file.unlink(missing_ok=True)
         stop_flag_file.unlink(missing_ok=True)

@@ -28,7 +28,7 @@ import { Play } from "lucide-vue-next"
 // Initialize transcript store
 const transcriptStore = useTranscriptStore()
 
-import { onMounted } from 'vue'
+import { onMounted, onBeforeUnmount } from 'vue'
 import type { Transcript } from '@/features/zoom_resume/types'
 import { transcriptApi } from '@/features/zoom_resume/api'
 
@@ -38,6 +38,7 @@ const zoomMeetingLink = ref('')
 const isJoiningZoom = ref(false)
 const activeBotId = ref<string | null>(null)
 const isEndingBot = ref(false)
+let botStatusInterval: ReturnType<typeof setInterval> | null = null
 
 const props = defineProps<{
   isDialogOpen: boolean
@@ -201,6 +202,39 @@ async function endZoomBot() {
   }
 }
 
+function clearBotSessionStorage() {
+  localStorage.removeItem('zoom_bot_id')
+  localStorage.removeItem('zoom_meeting_link')
+  localStorage.removeItem('zoom_bot_started_at')
+}
+
+async function syncBotStatus(silent: boolean = true) {
+  const botId = activeBotId.value || localStorage.getItem('zoom_bot_id')
+  if (!botId) return
+
+  try {
+    const status = await transcriptApi.getZoomBotStatus(botId)
+
+    if (status.status === 'running' || status.status === 'stopping') {
+      activeBotId.value = botId
+      return
+    }
+
+    // terminated
+    const wasActive = !!activeBotId.value
+    activeBotId.value = null
+    clearBotSessionStorage()
+
+    if (!silent && wasActive) {
+      toast.info('Bot session updated', {
+        description: 'Session sudah berakhir dari halaman lain.',
+      })
+    }
+  } catch (err) {
+    console.error('[SYNC] Failed to sync bot status', err)
+  }
+}
+
 onMounted(() => {
   // Restore bot session from localStorage
   const savedBotId = localStorage.getItem('zoom_bot_id')
@@ -227,16 +261,29 @@ onMounted(() => {
       toast.info('Bot session restored', {
         description: `Active session from ${hoursSinceStart.toFixed(0)} hours ago`,
       })
+
+      // Verify restored session against backend status.
+      syncBotStatus(false)
     } else {
       // Session too old, clear it
-      localStorage.removeItem('zoom_bot_id')
-      localStorage.removeItem('zoom_meeting_link')
-      localStorage.removeItem('zoom_bot_started_at')
+      clearBotSessionStorage()
       console.log('[RESTORE] Bot session expired, cleared')
     }
   }
+
+  // Keep UI button state connected with server state (external page actions included)
+  botStatusInterval = setInterval(() => {
+    syncBotStatus(true)
+  }, 5000)
   
   loadLatestZoomTranscript()
+})
+
+onBeforeUnmount(() => {
+  if (botStatusInterval) {
+    clearInterval(botStatusInterval)
+    botStatusInterval = null
+  }
 })
 
 

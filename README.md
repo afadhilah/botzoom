@@ -138,7 +138,41 @@ sudo tail -f /var/log/botzoom/zoom-bot.log
 
 sudo apt update && sudo apt install pulseaudio -y
 pulseaudio -k 2>/dev/null
-pulseaudio --start --disallow-exit
+pacmd list-sinks
 pacmd load-module module-null-sink sink_name=virtual-sink sink_properties=device.description="Virtual_Sink"
 pacmd set-default-sink virtual-sink
 pacmd list-sinks
+
+# Install service
+sudo cp /home/cak-seno/botzoom/cloudflared-quick.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable cloudflared-quick
+sudo systemctl start cloudflared-quick
+
+# Check status
+sudo systemctl status cloudflared-quick
+
+# View logs
+sudo tail -f /var/log/cloudflared.log
+
+# Get URL from logs
+sudo grep trycloudflare.com /var/log/cloudflared.log | tail -1
+
+
+# Check status
+./tunnel.sh status
+
+# Get URL
+./tunnel.sh url
+
+# Stop tunnel
+./tunnel.sh stop
+
+# Start tunnel
+./tunnel.sh start
+
+# Restart (get new URL)
+./tunnel.sh restart
+
+# View logs
+./tunnel.sh logs
